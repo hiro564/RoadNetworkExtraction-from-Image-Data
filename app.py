@@ -30,20 +30,27 @@ st.sidebar.subheader("📏 距離スケール設定")
 enable_distance_scale = st.sidebar.checkbox("実距離計算を有効化", value=False)
 
 if enable_distance_scale:
-    st.sidebar.markdown("**経度範囲を入力**")
+    st.sidebar.markdown("**画像の範囲（緯度経度）**")
+    
+    col_lat1, col_lat2 = st.sidebar.columns(2)
+    with col_lat1:
+        north_latitude = st.number_input("北緯度", value=35.1, format="%.6f", step=0.000001)
+    with col_lat2:
+        south_latitude = st.number_input("南緯度", value=35.0, format="%.6f", step=0.000001)
+    
     col_lon1, col_lon2 = st.sidebar.columns(2)
     with col_lon1:
         west_longitude = st.number_input("西経度", value=135.0, format="%.6f", step=0.000001)
     with col_lon2:
-        east_longitude = st.number_input("東経度", value=136.0, format="%.6f", step=0.000001)
+        east_longitude = st.number_input("東経度", value=135.1, format="%.6f", step=0.000001)
     
-    st.sidebar.markdown("**緯度（距離計算用）**")
-    latitude = st.number_input("画像中心の緯度", value=35.0, format="%.6f", step=0.000001, 
-                               help="距離計算に使用する緯度（通常は画像の中心緯度）")
-    
-    # 画像幅（ピクセル）
-    image_width_px = st.sidebar.number_input("画像幅（ピクセル）", value=480, min_value=1, 
-                                             help="リサイズ後の画像幅")
+    # 画像サイズ（ピクセル）
+    st.sidebar.markdown("**画像サイズ（ピクセル）**")
+    col_size1, col_size2 = st.sidebar.columns(2)
+    with col_size1:
+        image_width_px = st.number_input("幅", value=480, min_value=1)
+    with col_size2:
+        image_height_px = st.number_input("高さ", value=360, min_value=1)
 
 # 画像処理設定
 st.sidebar.subheader("画像処理")
@@ -62,34 +69,43 @@ uploaded_file = st.file_uploader("画像ファイルをアップロード", type
 
 # --- 関数定義 ---
 
-def calculate_distance_per_pixel(west_lon, east_lon, latitude, image_width_px):
+def calculate_distance_scale(north_lat, south_lat, west_lon, east_lon, width_px, height_px):
     """
-    1ピクセルあたりの実距離を計算（メートル）
+    画像の緯度経度範囲から距離スケールを計算
     
     Parameters:
-    - west_lon: 西端の経度
-    - east_lon: 東端の経度
-    - latitude: 緯度（距離計算用）
-    - image_width_px: 画像の幅（ピクセル）
+    - north_lat, south_lat: 北端・南端の緯度
+    - west_lon, east_lon: 西端・東端の経度
+    - width_px, height_px: 画像の幅・高さ（ピクセル）
     
     Returns:
-    - meters_per_pixel: 1ピクセルあたりのメートル
+    - meters_per_pixel_x: 横方向の1ピクセルあたりのメートル
+    - meters_per_pixel_y: 縦方向の1ピクセルあたりのメートル
+    - meters_per_pixel_avg: 平均の1ピクセルあたりのメートル
     """
     # 地球の半径（メートル）
     EARTH_RADIUS = 6371000
     
-    # 経度差をラジアンに変換
+    # 中心緯度を計算
+    center_lat = (north_lat + south_lat) / 2
+    center_lat_rad = math.radians(center_lat)
+    
+    # 経度差（東西方向の距離）
     lon_diff = abs(east_lon - west_lon)
     lon_diff_rad = math.radians(lon_diff)
-    lat_rad = math.radians(latitude)
+    distance_x_meters = EARTH_RADIUS * lon_diff_rad * math.cos(center_lat_rad)
+    meters_per_pixel_x = distance_x_meters / width_px
     
-    # その緯度における経度1度あたりの距離を計算
-    distance_meters = EARTH_RADIUS * lon_diff_rad * math.cos(lat_rad)
+    # 緯度差（南北方向の距離）
+    lat_diff = abs(north_lat - south_lat)
+    lat_diff_rad = math.radians(lat_diff)
+    distance_y_meters = EARTH_RADIUS * lat_diff_rad
+    meters_per_pixel_y = distance_y_meters / height_px
     
-    # 1ピクセルあたりの距離
-    meters_per_pixel = distance_meters / image_width_px
+    # 平均値（斜め方向の距離計算用）
+    meters_per_pixel_avg = (meters_per_pixel_x + meters_per_pixel_y) / 2
     
-    return meters_per_pixel
+    return meters_per_pixel_x, meters_per_pixel_y, meters_per_pixel_avg
 
 
 def resize_image(img, target_width=480, target_height=360):
@@ -482,14 +498,21 @@ if uploaded_file is not None:
     
     # 距離スケール計算の表示
     if enable_distance_scale:
-        meters_per_px = calculate_distance_per_pixel(
+        m_per_px_x, m_per_px_y, m_per_px_avg = calculate_distance_scale(
+            north_latitude, 
+            south_latitude,
             west_longitude, 
             east_longitude, 
-            latitude, 
-            image_width_px
+            image_width_px,
+            image_height_px
         )
-        st.info(f"📏 計算結果: 1ピクセル = {meters_per_px:.2f} メートル "
-                f"(緯度 {latitude}°における東西{abs(east_longitude - west_longitude):.6f}°)")
+        
+        center_lat = (north_latitude + south_latitude) / 2
+        
+        st.info(f"📏 **距離スケール計算結果** (中心緯度: {center_lat:.6f}°)\n\n"
+                f"- 横方向: 1px = {m_per_px_x:.2f} m (経度差 {abs(east_longitude - west_longitude):.6f}°)\n"
+                f"- 縦方向: 1px = {m_per_px_y:.2f} m (緯度差 {abs(north_latitude - south_latitude):.6f}°)\n"
+                f"- 平均: 1px = {m_per_px_avg:.2f} m")
     
     # 処理実行ボタン
     if st.button("🚀 グラフデータを生成", type="primary"):
@@ -544,7 +567,7 @@ if uploaded_file is not None:
                 # CSVデータ生成
                 if enable_distance_scale:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, edges_set, current_height, meters_per_px
+                        nodes_data, edges_set, current_height, m_per_px_avg
                     )
                 else:
                     node_data, edge_data = create_csv_data(
@@ -634,7 +657,7 @@ else:
         ### 使い方
         
         1. **画像をアップロード**: 左のサイドバーから画像ファイルを選択
-        2. **距離スケール設定**（オプション）: 実距離計算を有効化し、経度・緯度を入力
+        2. **距離スケール設定**（オプション）: 実距離計算を有効化し、緯度経度範囲を入力
         3. **パラメータ調整**: サイドバーで各種パラメータを調整
         4. **生成開始**: 「グラフデータを生成」ボタンをクリック
         5. **結果確認**: 生成されたグラフとデータを確認
@@ -644,9 +667,9 @@ else:
         
         #### 距離スケール設定
         - **実距離計算を有効化**: ピクセル長を実距離（メートル）に変換
-        - **西経度・東経度**: 画像の東西端の経度を入力
-        - **緯度**: 距離計算に使用する緯度（通常は画像の中心）
-        - **画像幅**: リサイズ後の画像幅（ピクセル）
+        - **北緯度・南緯度**: 画像の上端・下端の緯度
+        - **西経度・東経度**: 画像の左端・右端の経度
+        - **画像サイズ**: リサイズ後の画像の幅と高さ（ピクセル）
         
         #### 画像処理
         - **画像リサイズ**: 処理速度向上のため480x360にリサイズ
@@ -657,8 +680,10 @@ else:
         
         ### 距離計算について
         
-        経度差と緯度から、その地点における1ピクセルあたりの実距離を計算します。
-        地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています。
+        - 画像の緯度経度範囲から、横方向・縦方向それぞれの距離スケールを計算します
+        - エッジの実距離は平均スケール値を使用して計算されます
+        - 地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています
+        - より正確な計算のため、画像の四隅の緯度経度を入力してください
         """)
     
     # カラー凡例
