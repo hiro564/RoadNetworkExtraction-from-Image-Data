@@ -27,7 +27,6 @@ st.sidebar.header("⚙️ 設定")
 # 画像処理設定
 st.sidebar.subheader("画像処理")
 resize_enabled = st.sidebar.checkbox("画像を480x360にリサイズ", value=True)
-crop_bottom = st.sidebar.slider("下部トリミング (ピクセル)", 0, 100, 50)
 
 # グラフ構築設定
 st.sidebar.subheader("グラフ構築")
@@ -47,22 +46,6 @@ def resize_image(img, target_width=480, target_height=360):
     original_height, original_width = img.shape[:2]
     resized_img = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
     return resized_img, original_height, original_width
-
-
-def crop_bottom_image(img, crop_pixels):
-    """画像下部をトリミング"""
-    if crop_pixels <= 0:
-        return img, img.shape[0]
-    
-    height, width = img.shape[:2]
-    new_height = height - crop_pixels
-    
-    if new_height <= 0:
-        return None, 0
-    
-    cropped_img = img[0:new_height, :]
-    return cropped_img, new_height
-
 
 def refine_skeleton_branches(skeleton):
     """スケルトンの分岐を整理"""
