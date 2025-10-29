@@ -9,6 +9,7 @@ import io
 from PIL import Image
 import tempfile
 import os
+import math
 
 # ページ設定
 st.set_page_config(
@@ -23,6 +24,26 @@ st.markdown("画像をアップロードして、スケルトン化とグラフ�
 
 # サイドバーでパラメータ設定
 st.sidebar.header("⚙️ 設定")
+
+# 距離スケール設定
+st.sidebar.subheader("📏 距離スケール設定")
+enable_distance_scale = st.sidebar.checkbox("実距離計算を有効化", value=False)
+
+if enable_distance_scale:
+    st.sidebar.markdown("**経度範囲を入力**")
+    col_lon1, col_lon2 = st.sidebar.columns(2)
+    with col_lon1:
+        west_longitude = st.number_input("西経度", value=135.0, format="%.6f", step=0.000001)
+    with col_lon2:
+        east_longitude = st.number_input("東経度", value=136.0, format="%.6f", step=0.000001)
+    
+    st.sidebar.markdown("**緯度（距離計算用）**")
+    latitude = st.number_input("画像中心の緯度", value=35.0, format="%.6f", step=0.000001, 
+                               help="距離計算に使用する緯度（通常は画像の中心緯度）")
+    
+    # 画像幅（ピクセル）
+    image_width_px = st.sidebar.number_input("画像幅（ピクセル）", value=480, min_value=1, 
+                                             help="リサイズ後の画像幅")
 
 # 画像処理設定
 st.sidebar.subheader("画像処理")
@@ -39,13 +60,44 @@ min_node_area = st.sidebar.slider("最小ノード面積", 1, 10, 1)
 uploaded_file = st.file_uploader("画像ファイルをアップロード", type=['png', 'jpg', 'jpeg'])
 
 
-# --- 関数定義（元のコードから抽出） ---
+# --- 関数定義 ---
+
+def calculate_distance_per_pixel(west_lon, east_lon, latitude, image_width_px):
+    """
+    1ピクセルあたりの実距離を計算（メートル）
+    
+    Parameters:
+    - west_lon: 西端の経度
+    - east_lon: 東端の経度
+    - latitude: 緯度（距離計算用）
+    - image_width_px: 画像の幅（ピクセル）
+    
+    Returns:
+    - meters_per_pixel: 1ピクセルあたりのメートル
+    """
+    # 地球の半径（メートル）
+    EARTH_RADIUS = 6371000
+    
+    # 経度差をラジアンに変換
+    lon_diff = abs(east_lon - west_lon)
+    lon_diff_rad = math.radians(lon_diff)
+    lat_rad = math.radians(latitude)
+    
+    # その緯度における経度1度あたりの距離を計算
+    distance_meters = EARTH_RADIUS * lon_diff_rad * math.cos(lat_rad)
+    
+    # 1ピクセルあたりの距離
+    meters_per_pixel = distance_meters / image_width_px
+    
+    return meters_per_pixel
+
 
 def resize_image(img, target_width=480, target_height=360):
     """画像をリサイズ"""
     original_height, original_width = img.shape[:2]
     resized_img = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
     return resized_img, original_height, original_width
+
 
 def refine_skeleton_branches(skeleton):
     """スケルトンの分岐を整理"""
@@ -359,7 +411,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     return nodes, edges, marked_img
 
 
-def create_csv_data(nodes, edges, image_height):
+def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """CSVデータを作成"""
     type_labels = {
         0: 'Intersection',
@@ -397,7 +449,14 @@ def create_csv_data(nodes, edges, image_height):
             
             if edge_key not in unique_edges:
                 unique_edges.add(edge_key)
-                edge_data.append([edge_id_counter, n1, n2, length])
+                
+                if meters_per_pixel is not None:
+                    # 実距離を計算（メートル）
+                    distance_meters = length * meters_per_pixel
+                    edge_data.append([edge_id_counter, n1, n2, length, f"{distance_meters:.2f}"])
+                else:
+                    edge_data.append([edge_id_counter, n1, n2, length])
+                
                 edge_id_counter += 1
     
     return node_data, edge_data
@@ -421,6 +480,17 @@ if uploaded_file is not None:
     
     st.success("✅ 画像をアップロードしました")
     
+    # 距離スケール計算の表示
+    if enable_distance_scale:
+        meters_per_px = calculate_distance_per_pixel(
+            west_longitude, 
+            east_longitude, 
+            latitude, 
+            image_width_px
+        )
+        st.info(f"📏 計算結果: 1ピクセル = {meters_per_px:.2f} メートル "
+                f"(緯度 {latitude}°における東西{abs(east_longitude - west_longitude):.6f}°)")
+    
     # 処理実行ボタン
     if st.button("🚀 グラフデータを生成", type="primary"):
         with st.spinner("処理中..."):
@@ -428,7 +498,7 @@ if uploaded_file is not None:
             
             # ステップ1: リサイズ
             if resize_enabled:
-                st.info("ステップ 1/4: 画像リサイズ中...")
+                st.info("ステップ 1/3: 画像リサイズ中...")
                 img, orig_h, orig_w = resize_image(img, 480, 360)
                 current_height = 360
                 progress_bar.progress(25)
@@ -436,12 +506,12 @@ if uploaded_file is not None:
                 current_height = img.shape[0]
             
             # ステップ2: スケルトン化
-            st.info("ステップ 3/4: スケルトン化中...")
+            st.info("ステップ 2/3: スケルトン化中...")
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
             progress_bar.progress(60)
             
             # ステップ3: グラフ構築
-            st.info("ステップ 4/4: グラフ構築中...")
+            st.info("ステップ 3/3: グラフ構築中...")
             nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
@@ -472,7 +542,14 @@ if uploaded_file is not None:
                     st.image(cv2.cvtColor(marked_img, cv2.COLOR_BGR2RGB), use_container_width=True)
                 
                 # CSVデータ生成
-                node_data, edge_data = create_csv_data(nodes_data, edges_set, current_height)
+                if enable_distance_scale:
+                    node_data, edge_data = create_csv_data(
+                        nodes_data, edges_set, current_height, meters_per_px
+                    )
+                else:
+                    node_data, edge_data = create_csv_data(
+                        nodes_data, edges_set, current_height
+                    )
                 
                 # ダウンロードボタン
                 st.subheader("📥 データダウンロード")
@@ -492,10 +569,12 @@ if uploaded_file is not None:
                     )
                 
                 with col_dl2:
-                    edge_csv = create_csv_file(
-                        edge_data,
-                        ['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
-                    )
+                    if enable_distance_scale:
+                        edge_header = ['edge_id', 'from_node_id', 'to_node_id', 'pixel_length', 'distance_meters']
+                    else:
+                        edge_header = ['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
+                    
+                    edge_csv = create_csv_file(edge_data, edge_header)
                     st.download_button(
                         label="エッジCSVをダウンロード",
                         data=edge_csv,
@@ -526,11 +605,25 @@ if uploaded_file is not None:
                 
                 with st.expander("🔗 エッジデータプレビュー"):
                     st.write(f"総エッジ数: {len(edge_data)}")
-                    df_edges = pd.DataFrame(
-                        edge_data,
-                        columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
-                    )
+                    if enable_distance_scale:
+                        df_edges = pd.DataFrame(
+                            edge_data,
+                            columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length', 'distance_meters']
+                        )
+                    else:
+                        df_edges = pd.DataFrame(
+                            edge_data,
+                            columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
+                        )
                     st.dataframe(df_edges.head(10))
+                    
+                    # 距離統計を表示
+                    if enable_distance_scale:
+                        st.markdown("**距離統計**")
+                        total_distance = sum([float(row[4]) for row in edge_data])
+                        avg_distance = total_distance / len(edge_data) if edge_data else 0
+                        st.write(f"- 総距離: {total_distance:.2f} m ({total_distance/1000:.2f} km)")
+                        st.write(f"- 平均エッジ長: {avg_distance:.2f} m")
 
 else:
     st.info("👆 左側のファイルアップローダーから画像を選択してください")
@@ -541,19 +634,31 @@ else:
         ### 使い方
         
         1. **画像をアップロード**: 左のサイドバーから画像ファイルを選択
-        2. **パラメータ調整**: サイドバーで各種パラメータを調整
-        3. **生成開始**: 「グラフデータを生成」ボタンをクリック
-        4. **結果確認**: 生成されたグラフとデータを確認
-        5. **ダウンロード**: CSVファイルと画像をダウンロード
+        2. **距離スケール設定**（オプション）: 実距離計算を有効化し、経度・緯度を入力
+        3. **パラメータ調整**: サイドバーで各種パラメータを調整
+        4. **生成開始**: 「グラフデータを生成」ボタンをクリック
+        5. **結果確認**: 生成されたグラフとデータを確認
+        6. **ダウンロード**: CSVファイルと画像をダウンロード
         
         ### パラメータ説明
         
+        #### 距離スケール設定
+        - **実距離計算を有効化**: ピクセル長を実距離（メートル）に変換
+        - **西経度・東経度**: 画像の東西端の経度を入力
+        - **緯度**: 距離計算に使用する緯度（通常は画像の中心）
+        - **画像幅**: リサイズ後の画像幅（ピクセル）
+        
+        #### 画像処理
         - **画像リサイズ**: 処理速度向上のため480x360にリサイズ
-        - **下部トリミング**: 不要な下部領域を削除
         - **曲率分割閾値**: 大きいほど直線として認識しやすい
         - **最大ジャンプ距離**: ノイズ耐性（通常は2推奨）
         - **交差点検出閾値**: 交差点判定の感度
         - **最小ノード面積**: 小さなノイズを除去
+        
+        ### 距離計算について
+        
+        経度差と緯度から、その地点における1ピクセルあたりの実距離を計算します。
+        地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています。
         """)
     
     # カラー凡例
