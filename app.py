@@ -208,7 +208,7 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築"""
+    """グラフ検出と構築（端点を除外）"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -225,12 +225,11 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 node_type = -1
                 
                 if transitions >= min_transitions:
+                    # 交差点
                     is_feature = True
                     node_type = 0
-                elif transitions == 1:
-                    is_feature = True
-                    node_type = 2
                 elif transitions == 2:
+                    # カーブ/コーナー（端点を除外）
                     white_indices = [i for i, val in enumerate(neighbors) if val]
                     if len(white_indices) == 2:
                         idx1, idx2 = white_indices
@@ -238,6 +237,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         if distance == 2:
                             is_feature = True
                             node_type = 1
+                # transitions == 1 の場合（端点）は除外
                 
                 if is_feature:
                     feature_map[y, x] = 1
@@ -416,8 +416,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             color = (255, 0, 0)  # 交差点
         elif data['type'] == 1:
             color = (0, 0, 255)  # カーブ
-        elif data['type'] == 2:
-            color = (0, 255, 255)  # 端点
         elif data['type'] == 3:
             color = (0, 165, 255)  # 曲率分割
         
@@ -432,7 +430,6 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
-        2: 'Endpoint',
         3: 'Intermediate (Curvature Split)'
     }
     
@@ -688,15 +685,13 @@ else:
     
     # カラー凡例
     with st.expander("🎨 ノードの色の意味"):
-        col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
+        col_legend1, col_legend2, col_legend3 = st.columns(3)
         
         with col_legend1:
             st.markdown("🔴 **赤**: 交差点")
         with col_legend2:
             st.markdown("🔵 **青**: カーブ/コーナー")
         with col_legend3:
-            st.markdown("🟡 **黄**: 端点")
-        with col_legend4:
             st.markdown("🟠 **オレンジ**: 曲率分割点")
 
 # フッター
