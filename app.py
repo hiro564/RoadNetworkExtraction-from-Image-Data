@@ -435,21 +435,12 @@ if uploaded_file is not None:
             else:
                 current_height = img.shape[0]
             
-            # ステップ2: トリミング
-            st.info("ステップ 2/4: トリミング中...")
-            if crop_bottom > 0:
-                img, current_height = crop_bottom_image(img, crop_bottom)
-                if img is None:
-                    st.error("❌ トリミングに失敗しました")
-                    st.stop()
-            progress_bar.progress(40)
-            
-            # ステップ3: スケルトン化
+            # ステップ2: スケルトン化
             st.info("ステップ 3/4: スケルトン化中...")
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
             progress_bar.progress(60)
             
-            # ステップ4: グラフ構築
+            # ステップ3: グラフ構築
             st.info("ステップ 4/4: グラフ構築中...")
             nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
