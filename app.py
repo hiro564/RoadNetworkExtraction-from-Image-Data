@@ -208,7 +208,7 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築"""
+    """グラフ検出と構築（8方向探索・方向性保持版）"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -279,10 +279,14 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         return None, None, None
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
-    edges = set()
+    
+    # エッジリストを方向性付きで管理
+    directed_edges = []
+    
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
+    # 8方向探索で開始点を検出
     start_pixels = []
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']:
@@ -329,19 +333,20 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     coord_to_node_id[y, x] = target_node_id
                     node_id_counter += 1
                 
-                n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
-                edge_key = (n1, n2)
+                # 方向性を保持：from=current_start_node_id, to=target_node_id
+                length = len(path)
                 
-                if current_start_node_id == node_id or edge_key not in edges:
-                    edges.add(edge_key)
-                    length = len(path)
-                    nodes[current_start_node_id]['adj'].append((target_node_id, length))
-                    nodes[target_node_id]['adj'].append((current_start_node_id, length))
-                    
-                    edge_id_counter += 1
-                    for py, px in path:
-                        marked_img[py, px] = (0, 255, 0)
-                        edge_visited_map[py, px] = edge_id_counter
+                # 方向付きエッジとして記録
+                directed_edges.append((current_start_node_id, target_node_id, length))
+                
+                # 隣接リストにも追加
+                nodes[current_start_node_id]['adj'].append((target_node_id, length))
+                nodes[target_node_id]['adj'].append((current_start_node_id, length))
+                
+                edge_id_counter += 1
+                for py, px in path:
+                    marked_img[py, px] = (0, 255, 0)
+                    edge_visited_map[py, px] = edge_id_counter
                 
                 if is_end_node:
                     break
@@ -424,11 +429,11 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
-    return nodes, edges, marked_img
+    return nodes, directed_edges, marked_img
 
 
-def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成"""
+def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
+    """CSVデータを作成（方向性を保持）"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -453,27 +458,19 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジCSV
+    # エッジCSV（方向性を保持）
     edge_data = []
     edge_id_counter = 1
-    unique_edges = set()
     
-    for node_id, data in nodes.items():
-        for neighbor_id, length in data['adj']:
-            n1, n2 = min(node_id, neighbor_id), max(node_id, neighbor_id)
-            edge_key = (n1, n2)
-            
-            if edge_key not in unique_edges:
-                unique_edges.add(edge_key)
-                
-                if meters_per_pixel is not None:
-                    # 実距離を計算（メートル）
-                    distance_meters = length * meters_per_pixel
-                    edge_data.append([edge_id_counter, n1, n2, length, f"{distance_meters:.2f}"])
-                else:
-                    edge_data.append([edge_id_counter, n1, n2, length])
-                
-                edge_id_counter += 1
+    for from_node_id, to_node_id, length in directed_edges:
+        if meters_per_pixel is not None:
+            # 実距離を計算（メートル）
+            distance_meters = length * meters_per_pixel
+            edge_data.append([edge_id_counter, from_node_id, to_node_id, length, f"{distance_meters:.2f}"])
+        else:
+            edge_data.append([edge_id_counter, from_node_id, to_node_id, length])
+        
+        edge_id_counter += 1
     
     return node_data, edge_data
 
@@ -534,8 +531,8 @@ if uploaded_file is not None:
             progress_bar.progress(60)
             
             # ステップ3: グラフ構築
-            st.info("ステップ 3/3: グラフ構築中...")
-            nodes_data, edges_set, marked_img = detect_and_build_graph(
+            st.info("ステップ 3/3: グラフ構築中（8方向探索・方向性保持）...")
+            nodes_data, directed_edges, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
                 max_jump_distance,
@@ -544,10 +541,10 @@ if uploaded_file is not None:
             )
             progress_bar.progress(100)
             
-            if nodes_data is None or edges_set is None:
+            if nodes_data is None or directed_edges is None:
                 st.error("❌ グラフの検出に失敗しました。パラメータを調整してください。")
             else:
-                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edges_set)}")
+                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(directed_edges)}")
                 
                 # 結果表示
                 col1, col2, col3 = st.columns(3)
@@ -567,11 +564,11 @@ if uploaded_file is not None:
                 # CSVデータ生成
                 if enable_distance_scale:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, edges_set, current_height, m_per_px_avg
+                        nodes_data, directed_edges, current_height, m_per_px_avg
                     )
                 else:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, edges_set, current_height
+                        nodes_data, directed_edges, current_height
                     )
                 
                 # ダウンロードボタン
@@ -638,7 +635,20 @@ if uploaded_file is not None:
                             edge_data,
                             columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
                         )
-                    st.dataframe(df_edges.head(10))
+                    st.dataframe(df_edges.head(20))
+                    
+                    # エッジの方向性統計
+                    st.markdown("**エッジの方向性統計**")
+                    from_counts = {}
+                    for row in edge_data:
+                        from_id = row[1]
+                        from_counts[from_id] = from_counts.get(from_id, 0) + 1
+                    
+                    # 最も多く出現するfrom_node_idを表示
+                    top_from_nodes = sorted(from_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                    st.write("最も多くエッジを発するノード（上位10）:")
+                    for node_id, count in top_from_nodes:
+                        st.write(f"  - ノード{node_id}: {count}本のエッジ")
                     
                     # 距離統計を表示
                     if enable_distance_scale:
@@ -678,6 +688,22 @@ else:
         - **交差点検出閾値**: 交差点判定の感度
         - **最小ノード面積**: 小さなノイズを除去
         
+        ### エッジの方向性について（重要）
+        
+        - **from_node_id**: 線分追跡を**開始したノード**
+        - **to_node_id**: 線分追跡が**到達したノード**
+        - 例: ノード282から3方向に線が伸びている場合
+          - FromID=282, ToID=18
+          - FromID=282, ToID=1
+          - FromID=282, ToID=319
+          のように、**FromIDに282が3回登場**します
+        
+        ### 探索方法
+        
+        - 各ノードの座標から8方向（上下左右・斜め4方向）の隣接ピクセルを探索
+        - スケルトン線上で、ノード領域外のピクセルを開始点として線分追跡を開始
+        - シンプルで高速な処理が可能
+        
         ### 距離計算について
         
         - 画像の緯度経度範囲から、横方向・縦方向それぞれの距離スケールを計算します
@@ -701,4 +727,4 @@ else:
 
 # フッター
 st.markdown("---")
-st.markdown("Made with ❤️ using Streamlit")
+st.markdown("Made with ❤️ using Streamlit | 🔄 8方向探索版（方向性保持）")
