@@ -433,7 +433,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
 
 
 def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成（方向性を保持）"""
+    """CSVデータを作成（方向性を保持、from_node_idでソート）"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -441,9 +441,10 @@ def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
         3: 'Intermediate (Curvature Split)'
     }
     
-    # ノードCSV
+    # ノードCSV（node_idでソート）
     node_data = []
-    for node_id, data in nodes.items():
+    for node_id in sorted(nodes.keys()):
+        data = nodes[node_id]
         x_pixel, y_pixel = data['pos']
         node_type = data['type']
         
@@ -458,11 +459,14 @@ def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジCSV（方向性を保持）
+    # エッジをfrom_node_id、次にto_node_idでソート
+    sorted_edges = sorted(directed_edges, key=lambda x: (x[0], x[1]))
+    
+    # エッジCSV（方向性を保持、ソート済み）
     edge_data = []
     edge_id_counter = 1
     
-    for from_node_id, to_node_id, length in directed_edges:
+    for from_node_id, to_node_id, length in sorted_edges:
         if meters_per_pixel is not None:
             # 実距離を計算（メートル）
             distance_meters = length * meters_per_pixel
