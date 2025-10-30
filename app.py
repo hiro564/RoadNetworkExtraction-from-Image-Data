@@ -208,7 +208,7 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築（8方向探索・方向性保持版）"""
+    """グラフ検出と構築（8方向探索・方向性保持・全接続検出版）"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -283,7 +283,10 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     # エッジリストを方向性付きで管理
     directed_edges = []
     
-    edge_visited_map = np.full((H, W), -1, dtype=int)
+    # 各開始点ごとにエッジを追跡（重複を許可）
+    # key: (from_node_id, to_node_id), value: path
+    edge_paths = {}
+    
     edge_id_counter = 0
     
     # 8方向探索で開始点を検出
@@ -297,21 +300,17 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     coord_to_node_id[neighbor_y, neighbor_x] == -1):
                     start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
-    processed_starts = set()
-    
+    # 各開始点について独立に追跡
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
-        start_key = (node_id, initial_y, initial_x)
-        if start_key in processed_starts:
-            continue
-        if edge_visited_map[initial_y, initial_x] != -1:
-            continue
-        
         path = []
         temp_path_visited = set()
         y, x = initial_y, initial_x
         prev_dy, prev_dx = initial_y - start_y, initial_x - start_x
         current_curvature = 0.0
         current_start_node_id = node_id
+        
+        # このパスで既に訪問したピクセルをトラッキング
+        path_pixels = set()
         
         while True:
             end_node_id_check = coord_to_node_id[y, x]
@@ -333,20 +332,28 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     coord_to_node_id[y, x] = target_node_id
                     node_id_counter += 1
                 
-                # 方向性を保持：from=current_start_node_id, to=target_node_id
+                # エッジを記録
                 length = len(path)
+                edge_key = (current_start_node_id, target_node_id)
                 
-                # 方向付きエッジとして記録
-                directed_edges.append((current_start_node_id, target_node_id, length))
-                
-                # 隣接リストにも追加
-                nodes[current_start_node_id]['adj'].append((target_node_id, length))
-                nodes[target_node_id]['adj'].append((current_start_node_id, length))
-                
-                edge_id_counter += 1
-                for py, px in path:
-                    marked_img[py, px] = (0, 255, 0)
-                    edge_visited_map[py, px] = edge_id_counter
+                # 同じ(from, to)の組み合わせが既にある場合は、より短いパスを優先
+                if edge_key not in edge_paths or length < len(edge_paths[edge_key]):
+                    edge_paths[edge_key] = path.copy()
+                    
+                    # 隣接リストを更新
+                    # 既存のエントリを削除
+                    nodes[current_start_node_id]['adj'] = [
+                        (nid, l) for nid, l in nodes[current_start_node_id]['adj'] 
+                        if nid != target_node_id
+                    ]
+                    nodes[target_node_id]['adj'] = [
+                        (nid, l) for nid, l in nodes[target_node_id]['adj'] 
+                        if nid != current_start_node_id
+                    ]
+                    
+                    # 新しいエントリを追加
+                    nodes[current_start_node_id]['adj'].append((target_node_id, length))
+                    nodes[target_node_id]['adj'].append((current_start_node_id, length))
                 
                 if is_end_node:
                     break
@@ -355,11 +362,13 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     current_curvature = 0.0
                     path = []
             
-            if edge_visited_map[y, x] != -1:
+            # このパスで既に訪問済みならループなので終了
+            if (y, x) in path_pixels:
                 break
             
             path.append((y, x))
             temp_path_visited.add((y, x))
+            path_pixels.add((y, x))
             
             best_pixel = None
             best_vector = (0, 0)
@@ -373,7 +382,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     if not (0 <= next_y < H and 0 <= next_x < W):
                         continue
-                    if (next_y, next_x) in temp_path_visited or edge_visited_map[next_y, next_x] != -1:
+                    # このパス内で訪問済みかチェック
+                    if (next_y, next_x) in temp_path_visited:
                         continue
                     
                     if binary_img[next_y, next_x] == 1:
@@ -406,13 +416,20 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     mid_y, mid_x = y + best_vector[0]//2, x + best_vector[1]//2
                     path.append((mid_y, mid_x))
                     temp_path_visited.add((mid_y, mid_x))
+                    path_pixels.add((mid_y, mid_x))
                 
                 y, x = best_pixel
                 prev_dy, prev_dx = best_vector
             else:
                 break
+    
+    # edge_pathsから directed_edges を生成
+    for (from_node_id, to_node_id), path in edge_paths.items():
+        directed_edges.append((from_node_id, to_node_id, len(path)))
         
-        processed_starts.add((node_id, initial_y, initial_x))
+        # パスを描画
+        for py, px in path:
+            marked_img[py, px] = (0, 255, 0)
     
     # ノードを描画
     for node_id, data in nodes.items():
@@ -535,7 +552,7 @@ if uploaded_file is not None:
             progress_bar.progress(60)
             
             # ステップ3: グラフ構築
-            st.info("ステップ 3/3: グラフ構築中（8方向探索・方向性保持）...")
+            st.info("ステップ 3/3: グラフ構築中（8方向探索・全接続検出）...")
             nodes_data, directed_edges, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
@@ -701,12 +718,13 @@ else:
           - FromID=282, ToID=1
           - FromID=282, ToID=319
           のように、**FromIDに282が3回登場**します
+        - 各ノードから伸びる**全ての方向**のエッジを確実に検出します
         
         ### 探索方法
         
         - 各ノードの座標から8方向（上下左右・斜め4方向）の隣接ピクセルを探索
         - スケルトン線上で、ノード領域外のピクセルを開始点として線分追跡を開始
-        - シンプルで高速な処理が可能
+        - **各開始点を独立に追跡**し、同じノードから複数方向のエッジを確実に検出
         
         ### 距離計算について
         
@@ -731,4 +749,4 @@ else:
 
 # フッター
 st.markdown("---")
-st.markdown("Made with ❤️ using Streamlit | 🔄 8方向探索版（方向性保持）")
+st.markdown("Made with ❤️ using Streamlit | ✅ 全接続検出版")
