@@ -450,21 +450,16 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
 
 
 def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成（方向性を保持、from_node_idでソート）"""
-    type_labels = {
-        0: 'Intersection',
-        1: 'Curve/Corner (Topology)',
-        2: 'Endpoint',
-        3: 'Intermediate (Curvature Split)'
-    }
+    """CSVデータを作成（曲率分割点のみ出力）"""
+    type_labels = {3: 'Intermediate (Curvature Split)'}
     
-    # ノードCSV（node_idでソート）
+    # --- 曲率分割点のみ抽出 ---
+    curvature_nodes = {nid: n for nid, n in nodes.items() if n['type'] == 3}
+    
     node_data = []
-    for node_id in sorted(nodes.keys()):
-        data = nodes[node_id]
+    for node_id in sorted(curvature_nodes.keys()):
+        data = curvature_nodes[node_id]
         x_pixel, y_pixel = data['pos']
-        node_type = data['type']
-        
         x_scratch = int(round(x_pixel - 240))
         y_scratch = int(round(image_height / 2 - y_pixel))
         
@@ -472,28 +467,28 @@ def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
             node_id,
             x_scratch,
             y_scratch,
-            node_type,
-            type_labels.get(node_type, 'Unknown')
+            3,
+            type_labels[3]
         ])
     
-    # エッジをfrom_node_id、次にto_node_idでソート
-    sorted_edges = sorted(directed_edges, key=lambda x: (x[0], x[1]))
+    # --- 曲率分割点を含むエッジのみ抽出 ---
+    valid_ids = set(curvature_nodes.keys())
+    filtered_edges = [
+        e for e in directed_edges if e[0] in valid_ids or e[1] in valid_ids
+    ]
     
-    # エッジCSV（方向性を保持、ソート済み）
+    sorted_edges = sorted(filtered_edges, key=lambda x: (x[0], x[1]))
+    
     edge_data = []
-    edge_id_counter = 1
-    
-    for from_node_id, to_node_id, length in sorted_edges:
+    for i, (from_id, to_id, length) in enumerate(sorted_edges, 1):
         if meters_per_pixel is not None:
-            # 実距離を計算（メートル）
             distance_meters = length * meters_per_pixel
-            edge_data.append([edge_id_counter, from_node_id, to_node_id, length, f"{distance_meters:.2f}"])
+            edge_data.append([i, from_id, to_id, length, f"{distance_meters:.2f}"])
         else:
-            edge_data.append([edge_id_counter, from_node_id, to_node_id, length])
-        
-        edge_id_counter += 1
+            edge_data.append([i, from_id, to_id, length])
     
     return node_data, edge_data
+
 
 
 def create_csv_file(data, header):
