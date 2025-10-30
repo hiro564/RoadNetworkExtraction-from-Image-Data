@@ -275,8 +275,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             continue
         
         
-        # --- 修正ロジック: ノードクラスタだけでなく、その周辺もマッピングに含めて統合を強化する ---
-        # max_jump_distanceに基づいてノード領域を拡大し、近接ノードを統合しやすくする
+        # --- ノード統合ロジック: ノードクラスタとその周辺もマッピングに含めて統合を強化する ---
         dilation_radius = max_jump 
         
         pixels_to_map = set()
@@ -303,7 +302,9 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 coord_to_node_id[y, x] = node_id
                 mapped_coords.append((y, x))
         
-        if not mapped_coords and not region.coords: # 何もマッピングされなかった場合はスキップ
+        # 【修正箇所】ノードの統合チェック: mapped_coordsが空の場合、このクラスタは先行ノードに完全に吸収されたためスキップする。
+        # 以前の `and not region.coords` は冗長であり、エラーの原因となっていた可能性があったため削除。
+        if not mapped_coords:
              continue
 
         # ノードデータを作成
