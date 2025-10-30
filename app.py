@@ -172,6 +172,7 @@ def high_quality_skeletonization(img):
     
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
     
+    # 適応的閾値処理を使用して、背景が均一でない画像でも線を抽出
     binary = cv2.adaptiveThreshold(
         denoised, 255, 
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
@@ -187,9 +188,11 @@ def high_quality_skeletonization(img):
     dilated = cv2.dilate(cleaned, kernel_dilate, iterations=1)
     
     binary_bool = (dilated > 128).astype(bool)
+    # スケルトン化
     skeleton_bool = skeletonize(binary_bool)
     skeleton = skeleton_bool.astype(np.uint8)
     
+    # 小さすぎるコンポーネントの除去
     labeled_skeleton = label(skeleton, connectivity=2)
     regions = regionprops(labeled_skeleton)
     
@@ -200,6 +203,7 @@ def high_quality_skeletonization(img):
             for coord in region.coords:
                 filtered_skeleton[coord[0], coord[1]] = 1
     
+    # 短い枝の除去
     filtered_skeleton = refine_skeleton_branches(filtered_skeleton)
     
     processed_img = (filtered_skeleton * 255).astype(np.uint8)
@@ -208,17 +212,19 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築"""
+    """グラフ検出と構築（ノード統合ロジックを強化）"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
+    # 特徴点（交差点、端点、カーブ）の検出
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
                 neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
+                # 0から1への遷移回数 (Euler数の計算に基づき、交差点や端点を検出)
                 transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
                 
                 is_feature = False
@@ -226,10 +232,10 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 
                 if transitions >= min_transitions:
                     is_feature = True
-                    node_type = 0
+                    node_type = 0 # 交差点
                 elif transitions == 1:
                     is_feature = True
-                    node_type = 2
+                    node_type = 2 # 端点
                 elif transitions == 2:
                     white_indices = [i for i, val in enumerate(neighbors) if val]
                     if len(white_indices) == 2:
@@ -237,7 +243,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         distance = min(abs(idx1 - idx2), 8 - abs(idx1 - idx2))
                         if distance == 2:
                             is_feature = True
-                            node_type = 1
+                            node_type = 1 # カーブ/コーナー（トポロジー的に重要）
                 
                 if is_feature:
                     feature_map[y, x] = 1
@@ -246,10 +252,12 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     if feature_map.sum() == 0:
         return None, None, None
     
+    # 既存のフィーチャーピクセルをラベリングし、クラスタ化
     labeled_img = label(feature_map, connectivity=2)
     regions = regionprops(labeled_img)
     
     nodes = {}
+    # coord_to_node_idはノード領域全体をマッピングするために使用
     coord_to_node_id = np.full((H, W), -1, dtype=int)
     node_id_counter = 1
     
@@ -259,20 +267,53 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         node_id = node_id_counter
         center_y, center_x = region.centroid
         
+        # ノードクラスタ内の元のフィーチャーピクセルのタイプを分析
         cluster_types = [feature_pixels[(py, px)] for py, px in region.coords if (py, px) in feature_pixels]
         if cluster_types:
             most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
         else:
             continue
         
+        
+        # --- 修正ロジック: ノードクラスタだけでなく、その周辺もマッピングに含めて統合を強化する ---
+        # max_jump_distanceに基づいてノード領域を拡大し、近接ノードを統合しやすくする
+        dilation_radius = max_jump 
+        
+        pixels_to_map = set()
+        
+        # 1. 実際のノードピクセルをマップに追加 (region.coordsはフィーチャーピクセルクラスタ)
+        for y, x in region.coords:
+            pixels_to_map.add((y, x))
+            
+        # 2. 周辺の白いピクセルもマップに追加 (ノード統合とエッジ停止を明確化するため)
+        for y_orig, x_orig in region.coords:
+            for dy in range(-dilation_radius, dilation_radius + 1):
+                for dx in range(-dilation_radius, dilation_radius + 1):
+                    ny, nx = y_orig + dy, x_orig + dx
+                    
+                    # スケルトンピクセルのみをマッピング対象とする
+                    if (0 <= ny < H and 0 <= nx < W and binary_img[ny, nx] == 1):
+                        pixels_to_map.add((ny, nx))
+
+        # 3. マッピングを実行 (先に処理されたノードを優先)
+        mapped_coords = []
+        for y, x in pixels_to_map:
+            # まだマッピングされていないピクセルのみをマッピング
+            if coord_to_node_id[y, x] == -1: 
+                coord_to_node_id[y, x] = node_id
+                mapped_coords.append((y, x))
+        
+        if not mapped_coords and not region.coords: # 何もマッピングされなかった場合はスキップ
+             continue
+
+        # ノードデータを作成
         nodes[node_id] = {
             'pos': (int(center_x), int(center_y)), 
             'type': most_common_type, 
             'adj': [], 
-            'coords': region.coords
+            'coords': mapped_coords # マッピングされた拡張座標を格納
         }
-        for y, x in region.coords:
-            coord_to_node_id[y, x] = node_id
+        
         node_id_counter += 1
     
     if len(nodes) == 0:
@@ -283,18 +324,26 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
+    # 拡張されたノード座標を基にエッジ探索の開始点をリストアップ
     start_pixels = []
     for node_id, node_data in nodes.items():
-        for start_y, start_x in node_data['coords']:
+        # 拡張された 'coords' を使用
+        for start_y, start_x in node_data['coords']: 
             for dy, dx in neighbors_coord:
                 neighbor_y, neighbor_x = start_y + dy, start_x + dx
+                
+                # neighbor_y, neighbor_x はノードピクセルに隣接するピクセル
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1 and 
-                    coord_to_node_id[neighbor_y, neighbor_x] == -1):
+                    coord_to_node_id[neighbor_y, neighbor_x] == -1): # ノードにマッピングされていない
+                    
+                    # (開始ノードID, ノード側のピクセル, エッジ側のピクセル)
                     start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
+    
     
     processed_starts = set()
     
+    # エッジの探索
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
         start_key = (node_id, initial_y, initial_x)
         if start_key in processed_starts:
@@ -310,6 +359,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         current_start_node_id = node_id
         
         while True:
+            # 終了判定: パスの現在のピクセルが別のノードクラスタに属している場合
             end_node_id_check = coord_to_node_id[y, x]
             is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
             is_split_point = (current_curvature >= curvature_threshold) and (end_node_id_check == -1)
@@ -320,6 +370,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     target_node_id = end_node_id_check
                 elif is_split_point:
                     target_node_id = node_id_counter
+                    # 曲率分割ノードを新しいノードとして作成
                     nodes[target_node_id] = {
                         'pos': (x, y), 
                         'type': 3, 
@@ -332,11 +383,19 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
                 edge_key = (n1, n2)
                 
+                # エッジの重複チェック
                 if current_start_node_id == node_id or edge_key not in edges:
                     edges.add(edge_key)
                     length = len(path)
-                    nodes[current_start_node_id]['adj'].append((target_node_id, length))
-                    nodes[target_node_id]['adj'].append((current_start_node_id, length))
+                    
+                    # ノードにエッジ情報を追加（冗長な接続を防ぐ）
+                    existing_adj = [adj[0] for adj in nodes[current_start_node_id]['adj']]
+                    if target_node_id not in existing_adj:
+                        nodes[current_start_node_id]['adj'].append((target_node_id, length))
+
+                    existing_adj = [adj[0] for adj in nodes[target_node_id]['adj']]
+                    if current_start_node_id not in existing_adj:
+                        nodes[target_node_id]['adj'].append((current_start_node_id, length))
                     
                     edge_id_counter += 1
                     for py, px in path:
@@ -350,6 +409,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     current_curvature = 0.0
                     path = []
             
+            # 既に訪問済みのエッジピクセルかチェック
             if edge_visited_map[y, x] != -1:
                 break
             
@@ -360,6 +420,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             best_vector = (0, 0)
             best_score = -2
             
+            # 次のピクセルを探索（最大ジャンプ距離まで）
             for dy_search in range(-max_jump, max_jump + 1):
                 for dx_search in range(-max_jump, max_jump + 1):
                     if dy_search == 0 and dx_search == 0:
@@ -368,15 +429,25 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     if not (0 <= next_y < H and 0 <= next_x < W):
                         continue
+                    
+                    # 次のピクセルが現在のパス上にあるか、すでに別のエッジとして訪問済みかチェック
                     if (next_y, next_x) in temp_path_visited or edge_visited_map[next_y, next_x] != -1:
-                        continue
+                         continue
                     
                     if binary_img[next_y, next_x] == 1:
+                        # 拡張されたノード領域に到達した場合、それを優先して終端としてマーク
+                        if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
+                            best_pixel = (next_y, next_x)
+                            best_vector = (dy_search, dx_search)
+                            best_score = 10 # 確実に選ばれるように高いスコアを設定
+                            break
+                            
                         current_vector = (dy_search, dx_search)
                         is_adjacent = max(abs(dy_search), abs(dx_search)) == 1
                         is_jump = max(abs(dy_search), abs(dx_search)) == 2
                         
                         if is_adjacent:
+                            # 進行方向への連続性をスコア化
                             score = prev_dy * dy_search + prev_dx * dx_search
                             if score > best_score:
                                 best_score = score
@@ -385,25 +456,39 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         
                         elif is_jump:
                             mid_y1, mid_x1 = y + dy_search//2, x + dx_search//2
+                            # ギャップが空いていないかチェック
                             if binary_img[mid_y1, mid_x1] == 0:
+                                # ジャンプは連続性にペナルティ
                                 score = prev_dy * dy_search + prev_dx * dx_search - 3
                                 if score > best_score:
                                     best_score = score
                                     best_pixel = (next_y, next_x)
                                     best_vector = current_vector
+                
+                if best_score == 10: # 終端ノードが見つかった
+                    break
             
             if best_pixel:
                 new_dy, new_dx = best_vector
+                
+                # 終端ノードに到達した場合、パスに追加するだけで、曲率計算などはスキップ
+                if coord_to_node_id[best_pixel[0], best_pixel[1]] != -1 and coord_to_node_id[best_pixel[0], best_pixel[1]] != current_start_node_id:
+                    y, x = best_pixel
+                    prev_dy, prev_dx = new_dy, new_dx
+                    continue
+                
+                # 通常のエッジ追跡
                 curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
                 current_curvature += curvature_change
                 
-                if max(abs(best_vector[0]), abs(best_vector[1])) == 2:
-                    mid_y, mid_x = y + best_vector[0]//2, x + best_vector[1]//2
+                # ジャンプした場合の中間点追加ロジック
+                if max(abs(new_dy), abs(new_dx)) == 2:
+                    mid_y, mid_x = y + new_dy//2, x + new_dx//2
                     path.append((mid_y, mid_x))
                     temp_path_visited.add((mid_y, mid_x))
                 
                 y, x = best_pixel
-                prev_dy, prev_dx = best_vector
+                prev_dy, prev_dx = new_dy, new_dx
             else:
                 break
         
@@ -442,7 +527,8 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
         x_pixel, y_pixel = data['pos']
         node_type = data['type']
         
-        x_scratch = int(round(x_pixel - 240))
+        # スクラッチ座標系への変換 (中央を原点とし、y軸上向き)
+        x_scratch = int(round(x_pixel - 240)) # 480幅の場合
         y_scratch = int(round(image_height / 2 - y_pixel))
         
         node_data.append([
