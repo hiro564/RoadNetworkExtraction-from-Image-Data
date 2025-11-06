@@ -1,7 +1,8 @@
 streamlit
-opencv-python-headless
-numpy
-scikit-image
 scipy
 Pillow
 pandas
+opencv-python-headless==4.8.1.78
+streamlit
+numpy
+pillow
