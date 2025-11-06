@@ -1,5 +1,21 @@
 import streamlit as st
 import cv2
+import streamlit as st
+
+st.title("Debug Test")
+
+try:
+    import cv2
+    st.success("OpenCV imported successfully!")
+    st.write(f"OpenCV version: {cv2.__version__}")
+except ImportError as e:
+    st.error(f"Failed to import OpenCV: {e}")
+
+try:
+    import skimage
+    st.success("scikit-image imported successfully!")
+except ImportError as e:
+    st.error(f"Failed to import scikit-image: {e}")
 import numpy as np
 from skimage.measure import label, regionprops
 from skimage.morphology import skeletonize
