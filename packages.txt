@@ -1,6 +1,4 @@
-libgl1
-libglib2.0-0
-libsm6
-libxext6
-libxrender-dev
-libgomp1
+opencv-python-headless==4.8.1.78
+streamlit
+numpy
+pillow
