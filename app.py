@@ -320,7 +320,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']: 
             for dy, dx in neighbors_coord:
-                neighbor_y, neighbor_x = start_y + dy, x + dx
+                neighbor_y, neighbor_x = start_y + dy, start_x + dx
                 
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1 and 
@@ -451,7 +451,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                             # ギャップが空いていないかチェック
                             if binary_img[mid_y1, mid_x1] == 0:
                                 # ジャンプは連続性にペナルティ
-                                score = prev_dy * dy_search + prev_dx * dx_dx - 3
+                                # ★★★ 修正箇所: dx_dx -> dx_search ★★★
+                                score = prev_dy * dy_search + prev_dx * dx_search - 3 
                                 if score > best_score:
                                     best_score = score
                                     best_pixel = (next_y, next_x)
