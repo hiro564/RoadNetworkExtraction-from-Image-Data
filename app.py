@@ -30,7 +30,7 @@ st.sidebar.subheader("📏 距離スケール設定")
 enable_distance_scale = st.sidebar.checkbox("実距離計算を有効化", value=False)
 
 if enable_distance_scale:
-    st.sidebar.markdown("**画像の範囲（緯度経度）**")
+    st.sidebar.markdown("**画像の範囲(緯度経度)**")
     
     col_lat1, col_lat2 = st.sidebar.columns(2)
     with col_lat1:
@@ -44,8 +44,8 @@ if enable_distance_scale:
     with col_lon2:
         east_longitude = st.number_input("東経度", value=135.1, format="%.6f", step=0.000001)
     
-    # 画像サイズ（ピクセル）
-    st.sidebar.markdown("**画像サイズ（ピクセル）**")
+    # 画像サイズ(ピクセル)
+    st.sidebar.markdown("**画像サイズ(ピクセル)**")
     col_size1, col_size2 = st.sidebar.columns(2)
     with col_size1:
         image_width_px = st.number_input("幅", value=480, min_value=1)
@@ -70,21 +70,39 @@ uploaded_file = st.file_uploader("画像ファイルをアップロード", type
 # --- 関数定義 ---
 
 def calculate_distance_scale(north_lat, south_lat, west_lon, east_lon, width_px, height_px):
-    """画像の緯度経度範囲から距離スケールを計算"""
+    """
+    画像の緯度経度範囲から距離スケールを計算
+    
+    Parameters:
+    - north_lat, south_lat: 北端・南端の緯度
+    - west_lon, east_lon: 西端・東端の経度
+    - width_px, height_px: 画像の幅・高さ(ピクセル)
+    
+    Returns:
+    - meters_per_pixel_x: 横方向の1ピクセルあたりのメートル
+    - meters_per_pixel_y: 縦方向の1ピクセルあたりのメートル
+    - meters_per_pixel_avg: 平均の1ピクセルあたりのメートル
+    """
+    # 地球の半径(メートル)
     EARTH_RADIUS = 6371000
+    
+    # 中心緯度を計算
     center_lat = (north_lat + south_lat) / 2
     center_lat_rad = math.radians(center_lat)
     
+    # 経度差(東西方向の距離)
     lon_diff = abs(east_lon - west_lon)
     lon_diff_rad = math.radians(lon_diff)
     distance_x_meters = EARTH_RADIUS * lon_diff_rad * math.cos(center_lat_rad)
     meters_per_pixel_x = distance_x_meters / width_px
     
+    # 緯度差(南北方向の距離)
     lat_diff = abs(north_lat - south_lat)
     lat_diff_rad = math.radians(lat_diff)
     distance_y_meters = EARTH_RADIUS * lat_diff_rad
     meters_per_pixel_y = distance_y_meters / height_px
     
+    # 平均値(斜め方向の距離計算用)
     meters_per_pixel_avg = (meters_per_pixel_x + meters_per_pixel_y) / 2
     
     return meters_per_pixel_x, meters_per_pixel_y, meters_per_pixel_avg
@@ -102,7 +120,7 @@ def refine_skeleton_branches(skeleton):
     H, W = skeleton.shape
     refined = skeleton.copy()
     
-    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, 1), 
+    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, 1),
                    (1, 1), (1, 0), (1, -1), (0, -1)]
     
     endpoints = []
@@ -125,7 +143,7 @@ def refine_skeleton_branches(skeleton):
             neighbors = []
             for dy, dx in neighbors_8:
                 ny, nx = y + dy, x + dx
-                if (0 <= ny < H and 0 <= nx < W and 
+                if (0 <= ny < H and 0 <= nx < W and
                     skeleton[ny, nx] == 1 and (ny, nx) not in branch_pixels):
                     neighbors.append((ny, nx))
             
@@ -155,10 +173,10 @@ def high_quality_skeletonization(img):
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
     
     binary = cv2.adaptiveThreshold(
-        denoised, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
-        blockSize=11, 
+        denoised, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        blockSize=11,
         C=2
     )
     
@@ -189,8 +207,63 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
+def merge_duplicate_nodes(nodes):
+    """同じ座標のノードを統合"""
+    # 属性の優先度: 交差点 > 端点 > カーブ > 曲率分割
+    priority = {0: 0, 2: 1, 1: 2, 3: 3}
+    
+    pos_to_nodes = {}
+    for node_id, data in nodes.items():
+        pos = data['pos']
+        if pos not in pos_to_nodes:
+            pos_to_nodes[pos] = []
+        pos_to_nodes[pos].append(node_id)
+    
+    # 統合が必要な座標を処理
+    node_mapping = {}  # 古いID -> 新しいID
+    for pos, node_ids in pos_to_nodes.items():
+        if len(node_ids) > 1:
+            # 最も優先度の高いノードを選択
+            primary_node = min(node_ids, key=lambda nid: priority.get(nodes[nid]['type'], 999))
+            for nid in node_ids:
+                if nid != primary_node:
+                    node_mapping[nid] = primary_node
+    
+    # ノードを統合
+    nodes_to_delete = set()
+    for old_id, new_id in node_mapping.items():
+        # 隣接リストを統合
+        if old_id in nodes and new_id in nodes:
+            nodes[new_id]['adj'].extend(nodes[old_id]['adj'])
+            # coordsも統合
+            nodes[new_id]['coords'].extend(nodes[old_id]['coords'])
+            nodes_to_delete.add(old_id)
+    
+    # 重複ノードを削除
+    for node_id in nodes_to_delete:
+        if node_id in nodes:
+            del nodes[node_id]
+    
+    # すべてのノードの隣接リストを更新
+    for node_id in list(nodes.keys()):
+        new_adj = []
+        seen_edges = set()
+        for neighbor, length in nodes[node_id]['adj']:
+            # マッピングを適用
+            new_neighbor = node_mapping.get(neighbor, neighbor)
+            # 自己ループと重複エッジを防ぐ
+            if new_neighbor != node_id:
+                edge_key = (min(node_id, new_neighbor), max(node_id, new_neighbor))
+                if edge_key not in seen_edges:
+                    new_adj.append((new_neighbor, length))
+                    seen_edges.add(edge_key)
+        nodes[node_id]['adj'] = new_adj
+    
+    return nodes
+
+
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築（座標統合 + 全接続検出版）"""
+    """グラフ検出と構築"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -231,83 +304,65 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     labeled_img = label(feature_map, connectivity=2)
     regions = regionprops(labeled_img)
     
-    # 座標ベースでノードを統合
-    pos_to_node = {}
     nodes = {}
     coord_to_node_id = np.full((H, W), -1, dtype=int)
     node_id_counter = 1
     
-    type_priority = {0: 1, 1: 3, 2: 2, 3: 4}
-    
     for region in regions:
         if region.area < min_area:
             continue
-        
+        node_id = node_id_counter
         center_y, center_x = region.centroid
-        center_pos = (int(center_x), int(center_y))
         
         cluster_types = [feature_pixels[(py, px)] for py, px in region.coords if (py, px) in feature_pixels]
         if cluster_types:
-            most_common_type = min(cluster_types, key=lambda t: (type_priority.get(t, 99), -cluster_types.count(t)))
+            most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
         else:
             continue
         
-        if center_pos in pos_to_node:
-            existing_node_id = pos_to_node[center_pos]
-            existing_type = nodes[existing_node_id]['type']
-            
-            if type_priority.get(most_common_type, 99) < type_priority.get(existing_type, 99):
-                nodes[existing_node_id]['type'] = most_common_type
-            
-            for coord in region.coords:
-                if coord not in nodes[existing_node_id]['coords']:
-                    nodes[existing_node_id]['coords'].append(coord)
-            
-            for y, x in region.coords:
-                coord_to_node_id[y, x] = existing_node_id
-        else:
-            node_id = node_id_counter
-            pos_to_node[center_pos] = node_id
-            
-            nodes[node_id] = {
-                'pos': center_pos, 
-                'type': most_common_type, 
-                'adj': [], 
-                'coords': list(region.coords)
-            }
-            for y, x in region.coords:
-                coord_to_node_id[y, x] = node_id
-            node_id_counter += 1
+        nodes[node_id] = {
+            'pos': (int(center_x), int(center_y)),
+            'type': most_common_type,
+            'adj': [],
+            'coords': list(region.coords)
+        }
+        for y, x in region.coords:
+            coord_to_node_id[y, x] = node_id
+        node_id_counter += 1
     
     if len(nodes) == 0:
         return None, None, None
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
+    edges = set()
+    edge_visited_map = np.full((H, W), -1, dtype=int)
+    edge_id_counter = 0
     
-    # エッジを方向性付きで管理（グローバル訪問制限なし）
-    edge_paths = {}
-    
-    # 開始点を収集
     start_pixels = []
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']:
             for dy, dx in neighbors_coord:
                 neighbor_y, neighbor_x = start_y + dy, start_x + dx
-                if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
-                    binary_img[neighbor_y, neighbor_x] == 1 and 
+                if (0 <= neighbor_y < H and 0 <= neighbor_x < W and
+                    binary_img[neighbor_y, neighbor_x] == 1 and
                     coord_to_node_id[neighbor_y, neighbor_x] == -1):
                     start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
-    # 各開始点から独立に追跡
+    processed_starts = set()
+    
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
+        start_key = (node_id, initial_y, initial_x)
+        if start_key in processed_starts:
+            continue
+        if edge_visited_map[initial_y, initial_x] != -1:
+            continue
+        
         path = []
         temp_path_visited = set()
         y, x = initial_y, initial_x
         prev_dy, prev_dx = initial_y - start_y, initial_x - start_x
         current_curvature = 0.0
         current_start_node_id = node_id
-        
-        path_pixels = set()
         
         while True:
             end_node_id_check = coord_to_node_id[y, x]
@@ -319,33 +374,37 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 if is_end_node:
                     target_node_id = end_node_id_check
                 elif is_split_point:
-                    target_node_id = node_id_counter
-                    nodes[target_node_id] = {
-                        'pos': (x, y), 
-                        'type': 3, 
-                        'adj': [], 
-                        'coords': [(y, x)]
-                    }
-                    coord_to_node_id[y, x] = target_node_id
-                    node_id_counter += 1
-                
-                length = len(path) + 1
-                edge_key = (current_start_node_id, target_node_id)
-                
-                if edge_key not in edge_paths or length < edge_paths[edge_key][1]:
-                    edge_paths[edge_key] = (path.copy(), length)
+                    # 既に同じ座標にノードが存在するかチェック
+                    existing_node_id = coord_to_node_id[y, x]
                     
-                    nodes[current_start_node_id]['adj'] = [
-                        (nid, l) for nid, l in nodes[current_start_node_id]['adj'] 
-                        if nid != target_node_id
-                    ]
-                    nodes[target_node_id]['adj'] = [
-                        (nid, l) for nid, l in nodes[target_node_id]['adj'] 
-                        if nid != current_start_node_id
-                    ]
-                    
+                    if existing_node_id != -1 and existing_node_id != current_start_node_id:
+                        # 既存のノードを使用
+                        target_node_id = existing_node_id
+                    else:
+                        # 新しい分割ノードを作成
+                        target_node_id = node_id_counter
+                        nodes[target_node_id] = {
+                            'pos': (x, y),
+                            'type': 3,
+                            'adj': [],
+                            'coords': [(y, x)]
+                        }
+                        coord_to_node_id[y, x] = target_node_id
+                        node_id_counter += 1
+                
+                n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
+                edge_key = (n1, n2)
+                
+                if current_start_node_id == node_id or edge_key not in edges:
+                    edges.add(edge_key)
+                    length = len(path)
                     nodes[current_start_node_id]['adj'].append((target_node_id, length))
                     nodes[target_node_id]['adj'].append((current_start_node_id, length))
+                    
+                    edge_id_counter += 1
+                    for py, px in path:
+                        marked_img[py, px] = (0, 255, 0)
+                        edge_visited_map[py, px] = edge_id_counter
                 
                 if is_end_node:
                     break
@@ -353,14 +412,12 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     current_start_node_id = target_node_id
                     current_curvature = 0.0
                     path = []
-                    path_pixels.clear()
             
-            if (y, x) in path_pixels:
+            if edge_visited_map[y, x] != -1:
                 break
             
             path.append((y, x))
             temp_path_visited.add((y, x))
-            path_pixels.add((y, x))
             
             best_pixel = None
             best_vector = (0, 0)
@@ -374,7 +431,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     if not (0 <= next_y < H and 0 <= next_x < W):
                         continue
-                    if (next_y, next_x) in temp_path_visited:
+                    if (next_y, next_x) in temp_path_visited or edge_visited_map[next_y, next_x] != -1:
                         continue
                     
                     if binary_img[next_y, next_x] == 1:
@@ -407,52 +464,37 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     mid_y, mid_x = y + best_vector[0]//2, x + best_vector[1]//2
                     path.append((mid_y, mid_x))
                     temp_path_visited.add((mid_y, mid_x))
-                    path_pixels.add((mid_y, mid_x))
                 
                 y, x = best_pixel
                 prev_dy, prev_dx = best_vector
             else:
                 break
-    
-    # 双方向重複を排除してエッジを生成
-    unique_edges = {}
-    for (from_node_id, to_node_id), (path, length) in edge_paths.items():
-        normalized_key = (min(from_node_id, to_node_id), max(from_node_id, to_node_id))
         
-        if normalized_key not in unique_edges:
-            unique_edges[normalized_key] = (from_node_id, to_node_id, path, length)
-        else:
-            existing_from, existing_to, existing_path, existing_length = unique_edges[normalized_key]
-            if length < existing_length:
-                unique_edges[normalized_key] = (from_node_id, to_node_id, path, length)
+        processed_starts.add((node_id, initial_y, initial_x))
     
-    directed_edges = []
-    for normalized_key, (from_node_id, to_node_id, path, length) in unique_edges.items():
-        directed_edges.append((from_node_id, to_node_id, length))
-        
-        for py, px in path:
-            marked_img[py, px] = (0, 255, 0)
+    # 同じ座標のノードを統合
+    nodes = merge_duplicate_nodes(nodes)
     
     # ノードを描画
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
-            color = (255, 0, 0)
+            color = (255, 0, 0)  # 交差点
         elif data['type'] == 1:
-            color = (0, 0, 255)
+            color = (0, 0, 255)  # カーブ
         elif data['type'] == 2:
-            color = (0, 255, 255)
+            color = (0, 255, 255)  # 端点
         elif data['type'] == 3:
-            color = (0, 165, 255)
+            color = (0, 165, 255)  # 曲率分割
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
-    return nodes, directed_edges, marked_img
+    return nodes, edges, marked_img
 
 
-def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成（from_node_idでソート）"""
+def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
+    """CSVデータを作成"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -460,10 +502,9 @@ def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
         3: 'Intermediate (Curvature Split)'
     }
     
-    # ノードCSV（node_idでソート）
+    # ノードCSV
     node_data = []
-    for node_id in sorted(nodes.keys()):
-        data = nodes[node_id]
+    for node_id, data in nodes.items():
         x_pixel, y_pixel = data['pos']
         node_type = data['type']
         
@@ -478,21 +519,27 @@ def create_csv_data(nodes, directed_edges, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジをfrom_node_id、次にto_node_idでソート
-    sorted_edges = sorted(directed_edges, key=lambda x: (x[0], x[1]))
-    
     # エッジCSV
     edge_data = []
     edge_id_counter = 1
+    unique_edges = set()
     
-    for from_node_id, to_node_id, length in sorted_edges:
-        if meters_per_pixel is not None:
-            distance_meters = length * meters_per_pixel
-            edge_data.append([edge_id_counter, from_node_id, to_node_id, length, f"{distance_meters:.2f}"])
-        else:
-            edge_data.append([edge_id_counter, from_node_id, to_node_id, length])
-        
-        edge_id_counter += 1
+    for node_id, data in nodes.items():
+        for neighbor_id, length in data['adj']:
+            n1, n2 = min(node_id, neighbor_id), max(node_id, neighbor_id)
+            edge_key = (n1, n2)
+            
+            if edge_key not in unique_edges:
+                unique_edges.add(edge_key)
+                
+                if meters_per_pixel is not None:
+                    # 実距離を計算(メートル)
+                    distance_meters = length * meters_per_pixel
+                    edge_data.append([edge_id_counter, n1, n2, length, f"{distance_meters:.2f}"])
+                else:
+                    edge_data.append([edge_id_counter, n1, n2, length])
+                
+                edge_id_counter += 1
     
     return node_data, edge_data
 
@@ -509,15 +556,21 @@ def create_csv_file(data, header):
 # --- メイン処理 ---
 
 if uploaded_file is not None:
+    # 画像読み込み
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     
     st.success("✅ 画像をアップロードしました")
     
+    # 距離スケール計算の表示
     if enable_distance_scale:
         m_per_px_x, m_per_px_y, m_per_px_avg = calculate_distance_scale(
-            north_latitude, south_latitude, west_longitude, east_longitude, 
-            image_width_px, image_height_px
+            north_latitude,
+            south_latitude,
+            west_longitude,
+            east_longitude,
+            image_width_px,
+            image_height_px
         )
         
         center_lat = (north_latitude + south_latitude) / 2
@@ -527,10 +580,12 @@ if uploaded_file is not None:
                 f"- 縦方向: 1px = {m_per_px_y:.2f} m (緯度差 {abs(north_latitude - south_latitude):.6f}°)\n"
                 f"- 平均: 1px = {m_per_px_avg:.2f} m")
     
+    # 処理実行ボタン
     if st.button("🚀 グラフデータを生成", type="primary"):
         with st.spinner("処理中..."):
             progress_bar = st.progress(0)
             
+            # ステップ1: リサイズ
             if resize_enabled:
                 st.info("ステップ 1/3: 画像リサイズ中...")
                 img, orig_h, orig_w = resize_image(img, 480, 360)
@@ -539,22 +594,28 @@ if uploaded_file is not None:
             else:
                 current_height = img.shape[0]
             
+            # ステップ2: スケルトン化
             st.info("ステップ 2/3: スケルトン化中...")
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
             progress_bar.progress(60)
             
-            st.info("ステップ 3/3: グラフ構築中（全接続検出 + 座標統合版）...")
-            nodes_data, directed_edges, marked_img = detect_and_build_graph(
-                skeleton_data, curvature_threshold, max_jump_distance,
-                min_intersection_transitions, min_node_area
+            # ステップ3: グラフ構築
+            st.info("ステップ 3/3: グラフ構築中...")
+            nodes_data, edges_set, marked_img = detect_and_build_graph(
+                skeleton_data,
+                curvature_threshold,
+                max_jump_distance,
+                min_intersection_transitions,
+                min_node_area
             )
             progress_bar.progress(100)
             
-            if nodes_data is None or directed_edges is None:
+            if nodes_data is None or edges_set is None:
                 st.error("❌ グラフの検出に失敗しました。パラメータを調整してください。")
             else:
-                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(directed_edges)}")
+                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edges_set)}")
                 
+                # 結果表示
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
@@ -569,15 +630,17 @@ if uploaded_file is not None:
                     st.subheader("グラフ画像")
                     st.image(cv2.cvtColor(marked_img, cv2.COLOR_BGR2RGB), use_container_width=True)
                 
+                # CSVデータ生成
                 if enable_distance_scale:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, directed_edges, current_height, m_per_px_avg
+                        nodes_data, edges_set, current_height, m_per_px_avg
                     )
                 else:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, directed_edges, current_height
+                        nodes_data, edges_set, current_height
                     )
                 
+                # ダウンロードボタン
                 st.subheader("📥 データダウンロード")
                 
                 col_dl1, col_dl2, col_dl3 = st.columns(3)
@@ -609,6 +672,7 @@ if uploaded_file is not None:
                     )
                 
                 with col_dl3:
+                    # グラフ画像をダウンロード
                     is_success, buffer = cv2.imencode(".png", marked_img)
                     if is_success:
                         st.download_button(
@@ -618,6 +682,7 @@ if uploaded_file is not None:
                             mime="image/png"
                         )
                 
+                # データプレビュー
                 with st.expander("📊 ノードデータプレビュー"):
                     st.write(f"総ノード数: {len(node_data)}")
                     import pandas as pd
@@ -639,63 +704,67 @@ if uploaded_file is not None:
                             edge_data,
                             columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
                         )
-                    st.dataframe(df_edges.head(20))
-                    
-                    # エッジの方向性統計
-                    st.markdown("**エッジの方向性統計**")
-                    from_counts = {}
-                    for row in edge_data:
-                        from_id = row[1]
-                        from_counts[from_id] = from_counts.get(from_id, 0) + 1
-                    
-                    top_from_nodes = sorted(from_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-                    st.write("最も多くエッジを発するノード（上位10）:")
-                    for node_id, count in top_from_nodes:
-                        st.write(f"  - ノード{node_id}: {count}本のエッジ")
-                    
-                    if enable_distance_scale:
-                        st.markdown("**距離統計**")
-                        total_distance = sum([float(row[4]) for row in edge_data])
-                        avg_distance = total_distance / len(edge_data) if edge_data else 0
-                        st.write(f"- 総距離: {total_distance:.2f} m ({total_distance/1000:.2f} km)")
-                        st.write(f"- 平均エッジ長: {avg_distance:.2f} m")
+                    st.dataframe(df_edges.head(10))
+                
+                # 距離統計を表示
+                if enable_distance_scale:
+                    st.markdown("**距離統計**")
+                    total_distance = sum([float(row[4]) for row in edge_data])
+                    avg_distance = total_distance / len(edge_data) if edge_data else 0
+                    st.write(f"- 総距離: {total_distance:.2f} m ({total_distance/1000:.2f} km)")
+                    st.write(f"- 平均エッジ長: {avg_distance:.2f} m")
 
 else:
     st.info("👆 左側のファイルアップローダーから画像を選択してください")
-    
-    with st.expander("📖 使い方"):
-        st.markdown("""
-        ### 完全版の特徴
-        
-        1. **座標統合**: 同じ座標に複数の属性を持つノードを自動統合
-        2. **全接続検出**: 各ノードから伸びる全方向のエッジを確実に検出
-        3. **双方向重複なし**: 同じエッジの両方向記録を排除
-        4. **from_node_idソート**: 出力が見やすく整理
-        
-        ### パラメータ説明
-        
-        - **曲率分割閾値**: 大きいほど直線として認識
-        - **最大ジャンプ距離**: ノイズ耐性（通常2推奨）
-        - **交差点検出閾値**: 交差点判定の感度
-        - **最小ノード面積**: 小ノイズ除去
-        
-        ### エッジ数について
-        
-        この版では、各ノードから出る全ての接続を検出するため、
-        エッジ数は大幅に増加します（従来の2倍程度が正常です）。
-        """)
-    
-    with st.expander("🎨 ノードの色の意味"):
-        col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
-        
-        with col_legend1:
-            st.markdown("🔴 **赤**: 交差点")
-        with col_legend2:
-            st.markdown("🔵 **青**: カーブ/コーナー")
-        with col_legend3:
-            st.markdown("🟡 **黄**: 端点")
-        with col_legend4:
-            st.markdown("🟠 **オレンジ**: 曲率分割点")
 
+# 使い方の説明
+with st.expander("📖 使い方"):
+    st.markdown("""
+    ### 使い方
+    
+    1. **画像をアップロード**: 左のサイドバーから画像ファイルを選択
+    2. **距離スケール設定**(オプション): 実距離計算を有効化し、緯度経度範囲を入力
+    3. **パラメータ調整**: サイドバーで各種パラメータを調整
+    4. **生成開始**: 「グラフデータを生成」ボタンをクリック
+    5. **結果確認**: 生成されたグラフとデータを確認
+    6. **ダウンロード**: CSVファイルと画像をダウンロード
+    
+    ### パラメータ説明
+    
+    #### 距離スケール設定
+    - **実距離計算を有効化**: ピクセル長を実距離(メートル)に変換
+    - **北緯度・南緯度**: 画像の上端・下端の緯度
+    - **西経度・東経度**: 画像の左端・右端の経度
+    - **画像サイズ**: リサイズ後の画像の幅と高さ(ピクセル)
+    
+    #### 画像処理
+    - **画像リサイズ**: 処理速度向上のため480x360にリサイズ
+    - **曲率分割閾値**: 大きいほど直線として認識しやすい
+    - **最大ジャンプ距離**: ノイズ耐性(通常は2推奨)
+    - **交差点検出閾値**: 交差点判定の感度
+    - **最小ノード面積**: 小さなノイズを除去
+    
+    ### 距離計算について
+    
+    - 画像の緯度経度範囲から、横方向・縦方向それぞれの距離スケールを計算します
+    - エッジの実距離は平均スケール値を使用して計算されます
+    - 地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています
+    - より正確な計算のため、画像の四隅の緯度経度を入力してください
+    """)
+
+# カラー凡例
+with st.expander("🎨 ノードの色の意味"):
+    col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
+    
+    with col_legend1:
+        st.markdown("🔴 **赤**: 交差点")
+    with col_legend2:
+        st.markdown("🔵 **青**: カーブ/コーナー")
+    with col_legend3:
+        st.markdown("🟡 **黄**: 端点")
+    with col_legend4:
+        st.markdown("🟠 **オレンジ**: 曲率分割点")
+
+# フッター
 st.markdown("---")
-st.markdown("Made with ❤️ using Streamlit | ✅ 完全版（座標統合 + 全接続検出）")
+st.markdown("Made with ❤️ using Streamlit")
