@@ -514,7 +514,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
 
 
 def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成"""
+    """CSVデータを作成（双方向エッジとして出力）"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -529,7 +529,7 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
         node_type = data['type']
         
         # スクラッチ座標系への変換 (中央を原点とし、y軸上向き)
-        x_scratch = int(round(x_pixel - 240)) # 480幅の場合
+        x_scratch = int(round(x_pixel - 240))  # 480幅の場合
         y_scratch = int(round(image_height / 2 - y_pixel))
         
         node_data.append([
@@ -540,27 +540,48 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジCSV
+    # エッジCSV（双方向として出力）
     edge_data = []
-    edge_id_counter = 1
-    unique_edges = set()
+    edge_id = 1
     
-    for node_id, data in nodes.items():
-        for neighbor_id, length in data['adj']:
-            n1, n2 = min(node_id, neighbor_id), max(node_id, neighbor_id)
-            edge_key = (n1, n2)
+    # edgesセット（無向エッジ）から双方向エッジを生成
+    for n1, n2 in edges:
+        # エッジ長を取得（n1のadjリストから）
+        length = None
+        for neighbor_id, edge_length in nodes[n1]['adj']:
+            if neighbor_id == n2:
+                length = edge_length
+                break
+        
+        if length is None:
+            # n2のadjリストからも試行
+            for neighbor_id, edge_length in nodes[n2]['adj']:
+                if neighbor_id == n1:
+                    length = edge_length
+                    break
+        
+        if length is None:
+            continue
+        
+        # 双方向エッジとして2行出力
+        if meters_per_pixel is not None:
+            distance_meters = length * meters_per_pixel
             
-            if edge_key not in unique_edges:
-                unique_edges.add(edge_key)
-                
-                if meters_per_pixel is not None:
-                    # 実距離を計算（メートル）
-                    distance_meters = length * meters_per_pixel
-                    edge_data.append([edge_id_counter, n1, n2, length, f"{distance_meters:.2f}"])
-                else:
-                    edge_data.append([edge_id_counter, n1, n2, length])
-                
-                edge_id_counter += 1
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length, f"{distance_meters:.2f}"])
+            edge_id += 1
+            
+            # n2 -> n1（逆方向）
+            edge_data.append([edge_id, n2, n1, length, f"{distance_meters:.2f}"])
+            edge_id += 1
+        else:
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length])
+            edge_id += 1
+            
+            # n2 -> n1（逆方向）
+            edge_data.append([edge_id, n2, n1, length])
+            edge_id += 1
     
     return node_data, edge_data
 
