@@ -219,7 +219,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
-    # 特徴点（交差点、端点、カーブ)の検出
+    # 特徴点（交差点、端点、カーブ）の検出
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
@@ -275,13 +275,13 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         core_coords = []
         for y, x in region.coords:
             coord_to_node_id[y, x] = node_id
-            core_coords.append((y, x))  # タプルとして追加
+            core_coords.append((y, x))
         
         nodes[node_id] = {
             'pos': (int(center_x), int(center_y)), 
             'type': most_common_type, 
             'adj': [],
-            'coords': core_coords  # リストとして保存
+            'coords': core_coords
         }
         
         node_id_counter += 1
@@ -289,7 +289,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     # フェーズ2: ノード周辺をマッピング
     dilation_radius = max_jump
     for node_id, node_data in list(nodes.items()):
-        # リストをセットに変換（タプルなので変換可能）
         extended_coords = set(node_data['coords'])
         
         for y_orig, x_orig in node_data['coords']:
@@ -303,7 +302,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         coord_to_node_id[ny, nx] = node_id
                         extended_coords.add((ny, nx))
         
-        # セットをリストに戻して保存
         nodes[node_id]['coords'] = list(extended_coords)
     
     if len(nodes) == 0:
@@ -483,6 +481,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     
     return nodes, edge_registry, marked_img
 
+
 def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
     """CSVデータを作成（双方向エッジを明示的に出力）"""
     type_labels = {
@@ -498,8 +497,7 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
         x_pixel, y_pixel = data['pos']
         node_type = data['type']
         
-        # スクラッチ座標系への変換 (中央を原点とし、y軸上向き)
-        x_scratch = int(round(x_pixel - 240))  # 480幅の場合
+        x_scratch = int(round(x_pixel - 240))
         y_scratch = int(round(image_height / 2 - y_pixel))
         
         node_data.append([
@@ -515,7 +513,7 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
     edge_id = 1
     
     for (n1, n2), _ in edge_registry.items():
-        # エッジ長を計算（n1のadjリストから取得）
+        # エッジ長を計算
         length = None
         for neighbor_id, edge_length in nodes[n1]['adj']:
             if neighbor_id == n2:
@@ -533,7 +531,7 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
             edge_data.append([edge_id, n1, n2, length, f"{distance_meters:.2f}"])
             edge_id += 1
             
-            # n2 -> n1（逆方向）
+            # n2 -> n1
             edge_data.append([edge_id, n2, n1, length, f"{distance_meters:.2f}"])
             edge_id += 1
         else:
@@ -541,7 +539,7 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
             edge_data.append([edge_id, n1, n2, length])
             edge_id += 1
             
-            # n2 -> n1（逆方向）
+            # n2 -> n1
             edge_data.append([edge_id, n2, n1, length])
             edge_id += 1
     
@@ -617,7 +615,8 @@ if uploaded_file is not None:
             if nodes_data is None or edge_registry is None:
                 st.error("❌ グラフの検出に失敗しました。パラメータを調整してください。")
             else:
-                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edge_registry)}")
+                # デバッグ情報を表示
+                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, 無向エッジ数: {len(edge_registry)}, 双方向エッジ数: {len(edge_registry) * 2}")
                 
                 # 結果表示
                 col1, col2, col3 = st.columns(3)
@@ -643,6 +642,9 @@ if uploaded_file is not None:
                     node_data, edge_data = create_csv_data(
                         nodes_data, edge_registry, current_height
                     )
+                
+                # デバッグ: 実際のエッジデータ行数を表示
+                st.info(f"📊 生成されたエッジデータ行数: {len(edge_data)}")
                 
                 # ダウンロードボタン
                 st.subheader("📥 データダウンロード")
@@ -676,7 +678,6 @@ if uploaded_file is not None:
                     )
                 
                 with col_dl3:
-                    # グラフ画像をダウンロード
                     is_success, buffer = cv2.imencode(".png", marked_img)
                     if is_success:
                         st.download_button(
@@ -697,7 +698,7 @@ if uploaded_file is not None:
                     st.dataframe(df_nodes.head(10))
                 
                 with st.expander("🔗 エッジデータプレビュー"):
-                    st.write(f"総エッジ数: {len(edge_data)}")
+                    st.write(f"総エッジ数（双方向）: {len(edge_data)}")
                     if enable_distance_scale:
                         df_edges = pd.DataFrame(
                             edge_data,
@@ -708,20 +709,18 @@ if uploaded_file is not None:
                             edge_data,
                             columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
                         )
-                    st.dataframe(df_edges.head(10))
+                    st.dataframe(df_edges.head(20))
                     
-                    # 距離統計を表示
                     if enable_distance_scale:
                         st.markdown("**距離統計**")
-                        total_distance = sum([float(row[4]) for row in edge_data])
-                        avg_distance = total_distance / len(edge_data) if edge_data else 0
+                        total_distance = sum([float(row[4]) for row in edge_data]) / 2  # 双方向なので半分
+                        avg_distance = total_distance / (len(edge_data) / 2) if edge_data else 0
                         st.write(f"- 総距離: {total_distance:.2f} m ({total_distance/1000:.2f} km)")
                         st.write(f"- 平均エッジ長: {avg_distance:.2f} m")
 
 else:
     st.info("👆 左側のファイルアップローダーから画像を選択してください")
     
-    # 使い方の説明
     with st.expander("📖 使い方"):
         st.markdown("""
         ### 使い方
@@ -748,15 +747,12 @@ else:
         - **交差点検出閾値**: 交差点判定の感度
         - **最小ノード面積**: 小さなノイズを除去
         
-        ### 距離計算について
+        ### 注意事項
         
-        - 画像の緯度経度範囲から、横方向・縦方向それぞれの距離スケールを計算します
-        - エッジの実距離は平均スケール値を使用して計算されます
-        - 地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています
-        - より正確な計算のため、画像の四隅の緯度経度を入力してください
+        - エッジCSVは**双方向**で出力されます（A→BとB→Aの両方）
+        - 無向エッジ数の2倍の行数が出力されます
         """)
     
-    # カラー凡例
     with st.expander("🎨 ノードの色の意味"):
         col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
         
@@ -769,6 +765,5 @@ else:
         with col_legend4:
             st.markdown("🟠 **オレンジ**: 曲率分割点")
 
-# フッター
 st.markdown("---")
 st.markdown("Made with ❤️ using Streamlit")
