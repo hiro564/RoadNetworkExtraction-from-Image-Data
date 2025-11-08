@@ -212,7 +212,7 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """グラフ検出と構築（ノード統合ロジックを強化）"""
+    """グラフ検出と構築（相互接続の重複を修正）"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -232,10 +232,10 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 
                 if transitions >= min_transitions:
                     is_feature = True
-                    node_type = 0 # 交差点
+                    node_type = 0  # 交差点
                 elif transitions == 1:
                     is_feature = True
-                    node_type = 2 # 端点
+                    node_type = 2  # 端点
                 elif transitions == 2:
                     white_indices = [i for i, val in enumerate(neighbors) if val]
                     if len(white_indices) == 2:
@@ -243,7 +243,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         distance = min(abs(idx1 - idx2), 8 - abs(idx1 - idx2))
                         if distance == 2:
                             is_feature = True
-                            node_type = 1 # カーブ/コーナー（トポロジー的に重要）
+                            node_type = 1  # カーブ/コーナー（トポロジー的に重要）
                 
                 if is_feature:
                     feature_map[y, x] = 1
@@ -261,6 +261,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     coord_to_node_id = np.full((H, W), -1, dtype=int)
     node_id_counter = 1
     
+    # ---- 修正1: ノードクラスタのマッピングを2段階に分ける ----
+    # フェーズ1: コアノード領域のみをマッピング
     for region in regions:
         if region.area < min_area:
             continue
@@ -274,81 +276,74 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         else:
             continue
         
-        
-        # --- ノード統合ロジック: ノードクラスタとその周辺もマッピングに含めて統合を強化する ---
-        dilation_radius = max_jump 
-        
-        pixels_to_map = set()
-        
-        # 1. 実際のノードピクセルをマップに追加 (region.coordsはフィーチャーピクセルクラスタ)
+        # コア領域のみマッピング
         for y, x in region.coords:
-            pixels_to_map.add((y, x))
-            
-        # 2. 周辺の白いピクセルもマップに追加 (ノード統合とエッジ停止を明確化するため)
-        for y_orig, x_orig in region.coords:
+            coord_to_node_id[y, x] = node_id
+        
+        nodes[node_id] = {
+            'pos': (int(center_x), int(center_y)), 
+            'type': most_common_type, 
+            'adj': [],
+            'coords': list(region.coords)  # コア座標を保存
+        }
+        
+        node_id_counter += 1
+    
+    # フェーズ2: ノード周辺をマッピング（エッジ探索停止用）
+    # ただし、重複を避けるため既にマッピングされたピクセルはスキップ
+    dilation_radius = max_jump
+    for node_id, node_data in list(nodes.items()):
+        extended_coords = set(node_data['coords'])
+        
+        for y_orig, x_orig in node_data['coords']:
             for dy in range(-dilation_radius, dilation_radius + 1):
                 for dx in range(-dilation_radius, dilation_radius + 1):
                     ny, nx = y_orig + dy, x_orig + dx
                     
                     # スケルトンピクセルのみをマッピング対象とする
-                    if (0 <= ny < H and 0 <= nx < W and binary_img[ny, nx] == 1):
-                        pixels_to_map.add((ny, nx))
-
-        # 3. マッピングを実行 (先に処理されたノードを優先)
-        mapped_coords = []
-        for y, x in pixels_to_map:
-            # まだマッピングされていないピクセルのみをマッピング
-            if coord_to_node_id[y, x] == -1: 
-                coord_to_node_id[y, x] = node_id
-                mapped_coords.append((y, x))
+                    if (0 <= ny < H and 0 <= nx < W and 
+                        binary_img[ny, nx] == 1 and 
+                        coord_to_node_id[ny, nx] == -1):  # まだマッピングされていない
+                        coord_to_node_id[ny, nx] = node_id
+                        extended_coords.add((ny, nx))
         
-        # 【修正箇所】ノードの統合チェック: mapped_coordsが空の場合、このクラスタは先行ノードに完全に吸収されたためスキップする。
-        # 以前の `and not region.coords` は冗長であり、エラーの原因となっていた可能性があったため削除。
-        if not mapped_coords:
-             continue
-
-        # ノードデータを作成
-        nodes[node_id] = {
-            'pos': (int(center_x), int(center_y)), 
-            'type': most_common_type, 
-            'adj': [], 
-            'coords': mapped_coords # マッピングされた拡張座標を格納
-        }
-        
-        node_id_counter += 1
+        nodes[node_id]['coords'] = list(extended_coords)
     
     if len(nodes) == 0:
         return None, None, None
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
-    edges = set()
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
-    # 拡張されたノード座標を基にエッジ探索の開始点をリストアップ
+    # ---- 修正2: エッジ探索開始点の重複を排除 ----
     start_pixels = []
+    processed_edge_starts = set()  # (start_node_id, edge_pixel) の組み合わせを記録
+    
     for node_id, node_data in nodes.items():
         # 拡張された 'coords' を使用
-        for start_y, start_x in node_data['coords']: 
+        for start_y, start_x in node_data['coords']:
             for dy, dx in neighbors_coord:
                 neighbor_y, neighbor_x = start_y + dy, start_x + dx
                 
                 # neighbor_y, neighbor_x はノードピクセルに隣接するピクセル
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1 and 
-                    coord_to_node_id[neighbor_y, neighbor_x] == -1): # ノードにマッピングされていない
+                    coord_to_node_id[neighbor_y, neighbor_x] == -1):  # ノードにマッピングされていない
                     
-                    # (開始ノードID, ノード側のピクセル, エッジ側のピクセル)
-                    start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
+                    # エッジピクセルの重複チェック
+                    edge_start_key = (node_id, neighbor_y, neighbor_x)
+                    if edge_start_key not in processed_edge_starts:
+                        # (開始ノードID, ノード側のピクセル, エッジ側のピクセル)
+                        start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
+                        processed_edge_starts.add(edge_start_key)
     
-    
-    processed_starts = set()
+    # ---- 修正3: エッジ探索と接続の重複防止 ----
+    # エッジごとに一意のIDを持たせて管理
+    edge_registry = {}  # (node1, node2) -> edge_id のマッピング
     
     # エッジの探索
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
-        start_key = (node_id, initial_y, initial_x)
-        if start_key in processed_starts:
-            continue
         if edge_visited_map[initial_y, initial_x] != -1:
             continue
         
@@ -381,27 +376,30 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     coord_to_node_id[y, x] = target_node_id
                     node_id_counter += 1
                 
+                # ---- 修正4: エッジの一意性保証 ----
                 n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
                 edge_key = (n1, n2)
                 
-                # エッジの重複チェック
-                if current_start_node_id == node_id or edge_key not in edges:
-                    edges.add(edge_key)
+                # このエッジがまだ登録されていない場合のみ追加
+                if edge_key not in edge_registry:
+                    edge_registry[edge_key] = edge_id_counter
                     length = len(path)
                     
-                    # ノードにエッジ情報を追加（冗長な接続を防ぐ）
-                    existing_adj = [adj[0] for adj in nodes[current_start_node_id]['adj']]
-                    if target_node_id not in existing_adj:
+                    # 相互接続を追加（重複チェック付き）
+                    # current_start_node_id -> target_node_id
+                    if target_node_id not in [adj[0] for adj in nodes[current_start_node_id]['adj']]:
                         nodes[current_start_node_id]['adj'].append((target_node_id, length))
-
-                    existing_adj = [adj[0] for adj in nodes[target_node_id]['adj']]
-                    if current_start_node_id not in existing_adj:
+                    
+                    # target_node_id -> current_start_node_id
+                    if current_start_node_id not in [adj[0] for adj in nodes[target_node_id]['adj']]:
                         nodes[target_node_id]['adj'].append((current_start_node_id, length))
                     
                     edge_id_counter += 1
+                    
+                    # パスをマーク
                     for py, px in path:
                         marked_img[py, px] = (0, 255, 0)
-                        edge_visited_map[py, px] = edge_id_counter
+                        edge_visited_map[py, px] = edge_registry[edge_key]
                 
                 if is_end_node:
                     break
@@ -433,14 +431,14 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     # 次のピクセルが現在のパス上にあるか、すでに別のエッジとして訪問済みかチェック
                     if (next_y, next_x) in temp_path_visited or edge_visited_map[next_y, next_x] != -1:
-                         continue
+                        continue
                     
                     if binary_img[next_y, next_x] == 1:
                         # 拡張されたノード領域に到達した場合、それを優先して終端としてマーク
                         if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
                             best_pixel = (next_y, next_x)
                             best_vector = (dy_search, dx_search)
-                            best_score = 10 # 確実に選ばれるように高いスコアを設定
+                            best_score = 10  # 確実に選ばれるように高いスコアを設定
                             break
                             
                         current_vector = (dy_search, dx_search)
@@ -466,7 +464,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                                     best_pixel = (next_y, next_x)
                                     best_vector = current_vector
                 
-                if best_score == 10: # 終端ノードが見つかった
+                if best_score == 10:  # 終端ノードが見つかった
                     break
             
             if best_pixel:
@@ -492,8 +490,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 prev_dy, prev_dx = new_dy, new_dx
             else:
                 break
-        
-        processed_starts.add((node_id, initial_y, initial_x))
     
     # ノードを描画
     for node_id, data in nodes.items():
@@ -510,11 +506,11 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
-    return nodes, edges, marked_img
+    return nodes, edge_registry, marked_img
 
 
-def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
-    """CSVデータを作成"""
+def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
+    """CSVデータを作成（edge_registryを使用）"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -529,7 +525,7 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
         node_type = data['type']
         
         # スクラッチ座標系への変換 (中央を原点とし、y軸上向き)
-        x_scratch = int(round(x_pixel - 240)) # 480幅の場合
+        x_scratch = int(round(x_pixel - 240))  # 480幅の場合
         y_scratch = int(round(image_height / 2 - y_pixel))
         
         node_data.append([
@@ -540,27 +536,25 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジCSV
+    # エッジCSV（edge_registryから生成）
     edge_data = []
-    edge_id_counter = 1
-    unique_edges = set()
-    
-    for node_id, data in nodes.items():
-        for neighbor_id, length in data['adj']:
-            n1, n2 = min(node_id, neighbor_id), max(node_id, neighbor_id)
-            edge_key = (n1, n2)
-            
-            if edge_key not in unique_edges:
-                unique_edges.add(edge_key)
-                
-                if meters_per_pixel is not None:
-                    # 実距離を計算（メートル）
-                    distance_meters = length * meters_per_pixel
-                    edge_data.append([edge_id_counter, n1, n2, length, f"{distance_meters:.2f}"])
-                else:
-                    edge_data.append([edge_id_counter, n1, n2, length])
-                
-                edge_id_counter += 1
+    for (n1, n2), edge_id in edge_registry.items():
+        # エッジ長を計算（n1のadjリストから取得）
+        length = None
+        for neighbor_id, edge_length in nodes[n1]['adj']:
+            if neighbor_id == n2:
+                length = edge_length
+                break
+        
+        if length is None:
+            continue
+        
+        if meters_per_pixel is not None:
+            # 実距離を計算（メートル）
+            distance_meters = length * meters_per_pixel
+            edge_data.append([edge_id + 1, n1, n2, length, f"{distance_meters:.2f}"])
+        else:
+            edge_data.append([edge_id + 1, n1, n2, length])
     
     return node_data, edge_data
 
@@ -622,7 +616,7 @@ if uploaded_file is not None:
             
             # ステップ3: グラフ構築
             st.info("ステップ 3/3: グラフ構築中...")
-            nodes_data, edges_set, marked_img = detect_and_build_graph(
+            nodes_data, edge_registry, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
                 max_jump_distance,
@@ -631,10 +625,10 @@ if uploaded_file is not None:
             )
             progress_bar.progress(100)
             
-            if nodes_data is None or edges_set is None:
+            if nodes_data is None or edge_registry is None:
                 st.error("❌ グラフの検出に失敗しました。パラメータを調整してください。")
             else:
-                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edges_set)}")
+                st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edge_registry)}")
                 
                 # 結果表示
                 col1, col2, col3 = st.columns(3)
@@ -654,11 +648,11 @@ if uploaded_file is not None:
                 # CSVデータ生成
                 if enable_distance_scale:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, edges_set, current_height, m_per_px_avg
+                        nodes_data, edge_registry, current_height, m_per_px_avg
                     )
                 else:
                     node_data, edge_data = create_csv_data(
-                        nodes_data, edges_set, current_height
+                        nodes_data, edge_registry, current_height
                     )
                 
                 # ダウンロードボタン
