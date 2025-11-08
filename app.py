@@ -484,7 +484,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     return nodes, edge_registry, marked_img
 
 def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
-    """CSVデータを作成（edge_registryを使用）"""
+    """CSVデータを作成（双方向エッジを明示的に出力）"""
     type_labels = {
         0: 'Intersection',
         1: 'Curve/Corner (Topology)',
@@ -510,9 +510,11 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
             type_labels.get(node_type, 'Unknown')
         ])
     
-    # エッジCSV（edge_registryから生成）
+    # エッジCSV（双方向として出力）
     edge_data = []
-    for (n1, n2), edge_id in edge_registry.items():
+    edge_id = 1
+    
+    for (n1, n2), _ in edge_registry.items():
         # エッジ長を計算（n1のadjリストから取得）
         length = None
         for neighbor_id, edge_length in nodes[n1]['adj']:
@@ -523,12 +525,25 @@ def create_csv_data(nodes, edge_registry, image_height, meters_per_pixel=None):
         if length is None:
             continue
         
+        # 双方向エッジとして2行出力
         if meters_per_pixel is not None:
-            # 実距離を計算（メートル）
             distance_meters = length * meters_per_pixel
-            edge_data.append([edge_id + 1, n1, n2, length, f"{distance_meters:.2f}"])
+            
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length, f"{distance_meters:.2f}"])
+            edge_id += 1
+            
+            # n2 -> n1（逆方向）
+            edge_data.append([edge_id, n2, n1, length, f"{distance_meters:.2f}"])
+            edge_id += 1
         else:
-            edge_data.append([edge_id + 1, n1, n2, length])
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length])
+            edge_id += 1
+            
+            # n2 -> n1（逆方向）
+            edge_data.append([edge_id, n2, n1, length])
+            edge_id += 1
     
     return node_data, edge_data
 
