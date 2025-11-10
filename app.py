@@ -164,51 +164,50 @@ def refine_skeleton_branches(skeleton):
 
 
 def high_quality_skeletonization(img):
-    """高品質スケルトン化"""
+    """高品質スケルトン化（膨張前処理付き）"""
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img.copy()
     
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-    
-    # 適応的閾値処理を使用して、背景が均一でない画像でも線を抽出
+
+    # 適応的二値化（背景ムラに強い）
     binary = cv2.adaptiveThreshold(
-        denoised, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
-        blockSize=11, 
+        denoised, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        blockSize=11,
         C=2
     )
-    
+
+    # ノイズ除去（小さなゴミ消去）
     kernel_small = np.ones((2, 2), np.uint8)
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small)
-    
-    kernel_dilate = np.ones((3, 3), np.uint8)
-    dilated = cv2.dilate(cleaned, kernel_dilate, iterations=1)
-    
-    binary_bool = (dilated > 128).astype(bool)
-    # スケルトン化
+
+    # --- 追加: 線を少し膨張させて途切れ防止 ---
+    kernel_expand = np.ones((3, 3), np.uint8)
+    expanded = cv2.dilate(cleaned, kernel_expand, iterations=1)
+
+    # これをスケルトン化対象とする
+    binary_bool = (expanded > 128).astype(bool)
     skeleton_bool = skeletonize(binary_bool)
     skeleton = skeleton_bool.astype(np.uint8)
-    
-    # 小さすぎるコンポーネントの除去
+
+    # 小さすぎるコンポーネント除去
     labeled_skeleton = label(skeleton, connectivity=2)
     regions = regionprops(labeled_skeleton)
-    
-    min_component_size = 5
     filtered_skeleton = np.zeros_like(skeleton)
     for region in regions:
-        if region.area >= min_component_size:
+        if region.area >= 5:
             for coord in region.coords:
                 filtered_skeleton[coord[0], coord[1]] = 1
-    
-    # 短い枝の除去
+
     filtered_skeleton = refine_skeleton_branches(filtered_skeleton)
-    
     processed_img = (filtered_skeleton * 255).astype(np.uint8)
-    
+
     return filtered_skeleton, processed_img
+
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
