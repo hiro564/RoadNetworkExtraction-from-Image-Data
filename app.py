@@ -485,30 +485,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     
     return nodes, edges, marked_img
 
-# --- 追加: 小さい孤立ネットワーク（ノード数3以下）を削除 ---
-def connected_components(graph_dict):
-    visited = set()
-    components = []
-    for node in graph_dict.keys():
-        if node not in visited:
-            stack = [node]
-            component = set()
-            while stack:
-                n = stack.pop()
-                if n not in visited:
-                    visited.add(n)
-                    component.add(n)
-                    stack.extend(graph_dict.get(n, []))
-            components.append(component)
-    return components
-
-components = connected_components({n: [adj[0] for adj in d["adj"]] for n, d in nodes.items()})
-for comp in components:
-    if len(comp) <= 3:
-        for n in comp:
-            nodes.pop(n, None)
-
-
 def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """CSVデータを作成（双方向エッジとして出力）"""
     type_labels = {
