@@ -227,12 +227,26 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
-    # Detect feature points (intersections, endpoints, curves)
+    # First pass: Detect intersections only
+    intersection_map = np.zeros_like(binary_img)
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
                 neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
-                # Number of 0-to-1 transitions (detect intersections and endpoints based on Euler number)
+                transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
+                
+                if transitions >= min_transitions:
+                    intersection_map[y, x] = 1
+    
+    # Dilate intersection map to create exclusion zone
+    kernel = np.ones((5, 5), np.uint8)  # 5x5の範囲で交差点周辺を除外
+    intersection_zone = cv2.dilate(intersection_map, kernel, iterations=1)
+    
+    # Second pass: Detect all features but exclude curves near intersections
+    for y in range(1, H - 1):
+        for x in range(1, W - 1):
+            if binary_img[y, x] == 1:
+                neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
                 transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
                 
                 is_feature = False
@@ -245,17 +259,20 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     is_feature = True
                     node_type = 2  # Endpoint
                 elif transitions == 2:
-                    white_indices = [i for i, val in enumerate(neighbors) if val]
-                    if len(white_indices) == 2:
-                        idx1, idx2 = white_indices
-                        distance = min(abs(idx1 - idx2), 8 - abs(idx1 - idx2))
-                        if distance == 2:
-                            is_feature = True
-                            node_type = 1  # Curve/corner (topologically important)
+                    # カーブ検出：ただし交差点周辺では無視
+                    if intersection_zone[y, x] == 0:  # 交差点ゾーン外のみ
+                        white_indices = [i for i, val in enumerate(neighbors) if val]
+                        if len(white_indices) == 2:
+                            idx1, idx2 = white_indices
+                            distance = min(abs(idx1 - idx2), 8 - abs(idx1 - idx2))
+                            if distance == 2:
+                                is_feature = True
+                                node_type = 1  # Curve/corner
                 
                 if is_feature:
                     feature_map[y, x] = 1
                     feature_pixels[(y, x)] = node_type
+    
     
     if feature_map.sum() == 0:
         return None, None, None
