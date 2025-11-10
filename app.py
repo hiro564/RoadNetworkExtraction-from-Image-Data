@@ -220,33 +220,19 @@ def high_quality_skeletonization(img):
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """Graph detection and construction (with enhanced node integration logic)"""
+    """Graph detection and construction (with enhanced node integration logic, curve/corner detection removed)"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
-    # First pass: Detect intersections only
-    intersection_map = np.zeros_like(binary_img)
+    # Detect feature points (intersections and endpoints only - curves removed)
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
                 neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
-                transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
-                
-                if transitions >= min_transitions:
-                    intersection_map[y, x] = 1
-    
-    # Dilate intersection map to create exclusion zone
-    kernel = np.ones((5, 5), np.uint8)  # 5x5の範囲で交差点周辺を除外
-    intersection_zone = cv2.dilate(intersection_map, kernel, iterations=1)
-    
-    # Second pass: Detect all features but exclude curves near intersections
-    for y in range(1, H - 1):
-        for x in range(1, W - 1):
-            if binary_img[y, x] == 1:
-                neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
+                # Number of 0-to-1 transitions (detect intersections and endpoints based on Euler number)
                 transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
                 
                 is_feature = False
@@ -258,11 +244,11 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 elif transitions == 1:
                     is_feature = True
                     node_type = 2  # Endpoint
+                # Curve/corner detection removed
                 
                 if is_feature:
                     feature_map[y, x] = 1
                     feature_pixels[(y, x)] = node_type
-    
     
     if feature_map.sum() == 0:
         return None, None, None
@@ -514,12 +500,12 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         x, y = data['pos']
         if data['type'] == 0:
             color = (255, 0, 0)  # Intersection
-        elif data['type'] == 1:
-            color = (0, 0, 255)  # Curve
         elif data['type'] == 2:
             color = (0, 255, 255)  # Endpoint
         elif data['type'] == 3:
             color = (0, 165, 255)  # Curvature split
+        else:
+            color = (128, 128, 128)  # Other
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
@@ -624,7 +610,6 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """Create CSV data (output as bidirectional edges)"""
     type_labels = {
         0: 'Intersection',
-        1: 'Curve/Corner (Topology)',
         2: 'Endpoint',
         3: 'Intermediate (Curvature Split)'
     }
@@ -943,15 +928,13 @@ else:
     
     # Color legend
     with st.expander("🎨 Node Color Meanings"):
-        col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
+        col_legend1, col_legend2, col_legend3 = st.columns(3)
         
         with col_legend1:
             st.markdown("🔴 **Red**: Intersection")
         with col_legend2:
-            st.markdown("🔵 **Blue**: Curve/Corner")
-        with col_legend3:
             st.markdown("🟡 **Yellow**: Endpoint")
-        with col_legend4:
+        with col_legend3:
             st.markdown("🟠 **Orange**: Curvature split point")
 
 # Footer
