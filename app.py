@@ -63,6 +63,24 @@ max_jump_distance = st.sidebar.slider("最大ジャンプ距離", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("交差点検出閾値", 2, 5, 3)
 min_node_area = st.sidebar.slider("最小ノード面積", 1, 10, 1)
 
+# 孤立ネットワーク除去設定
+st.sidebar.subheader("🔗 孤立ネットワーク除去")
+remove_isolated = st.sidebar.checkbox("孤立ネットワークを除去", value=True)
+isolation_mode = st.sidebar.radio(
+    "除去モード",
+    ["最大成分のみ保持", "サイズ閾値で保持"],
+    help="最大成分のみ: 最も大きい連結成分のみ残す\nサイズ閾値: 指定サイズ以上の成分を全て残す"
+)
+
+if isolation_mode == "サイズ閾値で保持":
+    min_component_size = st.sidebar.number_input(
+        "最小コンポーネントサイズ",
+        min_value=1,
+        max_value=100,
+        value=5,
+        help="この数以上のノードを持つ連結成分のみ保持"
+    )
+
 # ファイルアップロード
 uploaded_file = st.file_uploader("画像ファイルをアップロード", type=['png', 'jpg', 'jpeg'])
 
@@ -185,7 +203,7 @@ def high_quality_skeletonization(img):
     kernel_small = np.ones((2, 2), np.uint8)
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small)
 
-    # --- 追加: 線を少し膨張させて途切れ防止 ---
+    # 線を少し膨張させて途切れ防止
     kernel_expand = np.ones((3, 3), np.uint8)
     expanded = cv2.dilate(cleaned, kernel_expand, iterations=1)
 
@@ -207,7 +225,6 @@ def high_quality_skeletonization(img):
     processed_img = (filtered_skeleton * 255).astype(np.uint8)
 
     return filtered_skeleton, processed_img
-
 
 
 def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
@@ -269,8 +286,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         else:
             continue
         
-        # 【修正1】ノード統合の範囲を縮小（max_jumpではなく1に固定）
-        dilation_radius = 1  # 直接隣接のみをノード領域とする
+        # ノード統合の範囲を縮小（直接隣接のみをノード領域とする）
+        dilation_radius = 1
         
         pixels_to_map = set()
         
@@ -308,7 +325,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
     edges = set()
-    edge_paths = {}  # 【修正2】エッジのパス情報を保存
+    edge_paths = {}
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
@@ -324,7 +341,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
-    # 【修正3】全ての開始点から探索を実行（重複チェックを緩和）
+    # 全ての開始点から探索を実行
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
         # 既に処理済みのエッジピクセルはスキップ
         if edge_visited_map[initial_y, initial_x] != -1:
@@ -360,7 +377,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
                 edge_key = (n1, n2)
                 
-                # 【修正4】エッジが未登録の場合のみ追加
+                # エッジが未登録の場合のみ追加
                 if edge_key not in edges:
                     edges.add(edge_key)
                     length = len(path)
@@ -388,7 +405,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     current_curvature = 0.0
                     path = []
             
-            # 【修正5】ループ検出: 現在のパスで既に訪問済みなら終了
+            # ループ検出: 現在のパスで既に訪問済みなら終了
             if (y, x) in temp_path_visited:
                 break
             
@@ -408,7 +425,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     if not (0 <= next_y < H and 0 <= next_x < W):
                         continue
                     
-                    # 【修正6】現在のパスで訪問済みならスキップ（他のエッジは許可）
+                    # 現在のパスで訪問済みならスキップ（他のエッジは許可）
                     if (next_y, next_x) in temp_path_visited:
                          continue
                     
@@ -425,7 +442,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         
                         if is_adjacent:
                             score = prev_dy * dy_search + prev_dx * dx_search
-                            # 【修正7】未訪問のエッジピクセルにボーナス
+                            # 未訪問のエッジピクセルにボーナス
                             if edge_visited_map[next_y, next_x] == -1:
                                 score += 0.5
                             if score > best_score:
@@ -484,6 +501,165 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
     return nodes, edges, marked_img
+
+
+def find_connected_components(nodes):
+    """
+    グラフの連結成分を検出
+    
+    Returns:
+    - components: List[Set[int]] - 各連結成分のノードIDセット
+    """
+    visited = set()
+    components = []
+    
+    def dfs(node_id, component):
+        """深さ優先探索で連結成分を探索"""
+        if node_id in visited:
+            return
+        visited.add(node_id)
+        component.add(node_id)
+        
+        # 隣接ノードを探索
+        for neighbor_id, _ in nodes[node_id]['adj']:
+            if neighbor_id not in visited:
+                dfs(neighbor_id, component)
+    
+    # 全てのノードに対して連結成分を検出
+    for node_id in nodes.keys():
+        if node_id not in visited:
+            component = set()
+            dfs(node_id, component)
+            components.append(component)
+    
+    return components
+
+
+def filter_largest_component(nodes, edges):
+    """
+    最大の連結成分のみを残し、孤立ネットワークを除去
+    
+    Parameters:
+    - nodes: ノードデータの辞書
+    - edges: エッジのセット
+    
+    Returns:
+    - filtered_nodes: フィルタリング後のノードデータ
+    - filtered_edges: フィルタリング後のエッジセット
+    - removed_components: 削除された連結成分の情報
+    """
+    # 連結成分を検出
+    components = find_connected_components(nodes)
+    
+    # 各連結成分のサイズを計算
+    component_sizes = [(len(comp), comp) for comp in components]
+    component_sizes.sort(reverse=True)  # サイズの大きい順にソート
+    
+    # 最大の連結成分を取得
+    if not component_sizes:
+        return {}, set(), []
+    
+    largest_component = component_sizes[0][1]
+    
+    # 削除される連結成分の情報を記録
+    removed_components = []
+    for size, comp in component_sizes[1:]:
+        removed_components.append({
+            'size': size,
+            'node_ids': sorted(list(comp))
+        })
+    
+    # 最大連結成分のノードのみを残す
+    filtered_nodes = {nid: data for nid, data in nodes.items() if nid in largest_component}
+    
+    # 最大連結成分のエッジのみを残す
+    filtered_edges = {(n1, n2) for n1, n2 in edges if n1 in largest_component and n2 in largest_component}
+    
+    # 各ノードの隣接リストもフィルタリング
+    for node_id in filtered_nodes:
+        filtered_nodes[node_id]['adj'] = [
+            (neighbor_id, length) 
+            for neighbor_id, length in filtered_nodes[node_id]['adj'] 
+            if neighbor_id in largest_component
+        ]
+    
+    return filtered_nodes, filtered_edges, removed_components
+
+
+def filter_by_component_size(nodes, edges, min_component_size=5):
+    """
+    指定サイズ以上の連結成分のみを残す（複数の大きなコンポーネントを保持）
+    
+    Parameters:
+    - nodes: ノードデータの辞書
+    - edges: エッジのセット
+    - min_component_size: 保持する最小コンポーネントサイズ
+    
+    Returns:
+    - filtered_nodes: フィルタリング後のノードデータ
+    - filtered_edges: フィルタリング後のエッジセット
+    - removed_components: 削除された連結成分の情報
+    """
+    components = find_connected_components(nodes)
+    
+    # 保持する連結成分を選択
+    keep_components = set()
+    removed_components = []
+    
+    for comp in components:
+        if len(comp) >= min_component_size:
+            keep_components.update(comp)
+        else:
+            removed_components.append({
+                'size': len(comp),
+                'node_ids': sorted(list(comp))
+            })
+    
+    # フィルタリング
+    filtered_nodes = {nid: data for nid, data in nodes.items() if nid in keep_components}
+    filtered_edges = {(n1, n2) for n1, n2 in edges if n1 in keep_components and n2 in keep_components}
+    
+    # 隣接リストもフィルタリング
+    for node_id in filtered_nodes:
+        filtered_nodes[node_id]['adj'] = [
+            (neighbor_id, length) 
+            for neighbor_id, length in filtered_nodes[node_id]['adj'] 
+            if neighbor_id in keep_components
+        ]
+    
+    return filtered_nodes, filtered_edges, removed_components
+
+
+def redraw_graph(skeleton_data, nodes, edges):
+    """
+    フィルタリング後のグラフを再描画
+    """
+    marked_img = cv2.cvtColor(skeleton_data * 255, cv2.COLOR_GRAY2BGR)
+    
+    # エッジを描画
+    for n1, n2 in edges:
+        if n1 in nodes and n2 in nodes:
+            pos1 = nodes[n1]['pos']
+            pos2 = nodes[n2]['pos']
+            cv2.line(marked_img, pos1, pos2, (0, 255, 0), 1)
+    
+    # ノードを描画
+    for node_id, data in nodes.items():
+        x, y = data['pos']
+        if data['type'] == 0:
+            color = (255, 0, 0)  # 交差点
+        elif data['type'] == 1:
+            color = (0, 0, 255)  # カーブ
+        elif data['type'] == 2:
+            color = (0, 255, 255)  # 端点
+        elif data['type'] == 3:
+            color = (0, 165, 255)  # 曲率分割
+        
+        radius = 5 if data['type'] != 3 else 3
+        cv2.circle(marked_img, (x, y), radius, color, -1)
+    
+    return marked_img
+
 
 def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """CSVデータを作成（双方向エッジとして出力）"""
@@ -601,20 +777,20 @@ if uploaded_file is not None:
             
             # ステップ1: リサイズ
             if resize_enabled:
-                st.info("ステップ 1/3: 画像リサイズ中...")
+                st.info("ステップ 1/4: 画像リサイズ中...")
                 img, orig_h, orig_w = resize_image(img, 480, 360)
                 current_height = 360
-                progress_bar.progress(25)
+                progress_bar.progress(20)
             else:
                 current_height = img.shape[0]
             
             # ステップ2: スケルトン化
-            st.info("ステップ 2/3: スケルトン化中...")
+            st.info("ステップ 2/4: スケルトン化中...")
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
-            progress_bar.progress(60)
+            progress_bar.progress(45)
             
             # ステップ3: グラフ構築
-            st.info("ステップ 3/3: グラフ構築中...")
+            st.info("ステップ 3/4: グラフ構築中...")
             nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
@@ -622,11 +798,48 @@ if uploaded_file is not None:
                 min_intersection_transitions,
                 min_node_area
             )
-            progress_bar.progress(100)
+            progress_bar.progress(70)
             
             if nodes_data is None or edges_set is None:
                 st.error("❌ グラフの検出に失敗しました。パラメータを調整してください。")
+                progress_bar.progress(100)
             else:
+                # ステップ4: 孤立ネットワーク除去
+                if remove_isolated:
+                    st.info("ステップ 4/4: 孤立ネットワーク除去中...")
+                    
+                    original_node_count = len(nodes_data)
+                    original_edge_count = len(edges_set)
+                    
+                    if isolation_mode == "最大成分のみ保持":
+                        nodes_data, edges_set, removed = filter_largest_component(nodes_data, edges_set)
+                    else:
+                        nodes_data, edges_set, removed = filter_by_component_size(
+                            nodes_data, edges_set, min_component_size
+                        )
+                    
+                    # 除去された成分の情報を表示
+                    if removed:
+                        removed_node_count = original_node_count - len(nodes_data)
+                        removed_edge_count = original_edge_count - len(edges_set)
+                        
+                        st.warning(
+                            f"🗑️ 孤立ネットワークを除去: "
+                            f"{len(removed)}個の小さなコンポーネント "
+                            f"(ノード数: {removed_node_count}, エッジ数: {removed_edge_count})"
+                        )
+                        
+                        with st.expander("削除された連結成分の詳細"):
+                            for i, comp in enumerate(removed, 1):
+                                st.write(f"- コンポーネント {i}: {comp['size']}ノード (ID: {comp['node_ids']})")
+                    else:
+                        st.success("✅ 全てのコンポーネントが基準を満たしています")
+                    
+                    # グラフ画像を再描画（フィルタリング後）
+                    marked_img = redraw_graph(skeleton_data, nodes_data, edges_set)
+                
+                progress_bar.progress(100)
+                
                 st.success(f"✅ 処理完了! ノード数: {len(nodes_data)}, エッジ数: {len(edges_set)}")
                 
                 # 結果表示
@@ -758,12 +971,25 @@ else:
         - **交差点検出閾値**: 交差点判定の感度
         - **最小ノード面積**: 小さなノイズを除去
         
+        #### 孤立ネットワーク除去
+        - **除去モード - 最大成分のみ保持**: 最も大きい連結成分のみを残し、小さな孤立ネットワークを全て削除
+        - **除去モード - サイズ閾値で保持**: 指定サイズ以上の連結成分を全て保持（複数の大きなネットワークがある場合に有効）
+        - **最小コンポーネントサイズ**: サイズ閾値モードで保持する最小ノード数
+        
         ### 距離計算について
         
         - 画像の緯度経度範囲から、横方向・縦方向それぞれの距離スケールを計算します
         - エッジの実距離は平均スケール値を使用して計算されます
         - 地球を球体と仮定し、緯度による経度1度あたりの距離の変化を考慮しています
         - より正確な計算のため、画像の四隅の緯度経度を入力してください
+        
+        ### 改善点
+        
+        - ✅ 線の途切れを防ぐ前処理（膨張処理）を追加
+        - ✅ 相互接続（ループ構造）の検出を強化
+        - ✅ ノード統合範囲を最適化（過剰な統合を防止）
+        - ✅ 孤立ネットワークの自動検出と除去機能
+        - ✅ 連結成分の可視化と統計情報
         """)
     
     # カラー凡例
