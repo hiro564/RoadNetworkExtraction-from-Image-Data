@@ -10,6 +10,8 @@ from PIL import Image
 import tempfile
 import os
 import math
+import networkx as nx
+import pandas as pd
 
 # Page configuration
 st.set_page_config(
@@ -62,6 +64,12 @@ curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
+
+# Network integration settings
+st.sidebar.subheader("🔗 Network Integration")
+enable_integration = st.sidebar.checkbox("Integrate isolated networks", value=True)
+if enable_integration:
+    integration_threshold = st.sidebar.slider("Integration distance threshold (pixels)", 5, 50, 30, 5)
 
 # File upload
 uploaded_file = st.file_uploader("Upload image file", type=['png', 'jpg', 'jpeg'])
@@ -512,6 +520,99 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     return nodes, edges, marked_img
 
 
+def integrate_isolated_networks(nodes, edges, distance_threshold=30):
+    """
+    Integrate isolated network components by connecting them to the main component
+    
+    Parameters:
+    - nodes: Dictionary of node data
+    - edges: Set of edges (tuples of node IDs)
+    - distance_threshold: Maximum distance in pixels to connect components
+    
+    Returns:
+    - updated_edges: Set of edges including new bridging edges
+    - integration_info: Dictionary containing integration statistics
+    """
+    # Build graph using NetworkX
+    G = nx.Graph()
+    G.add_nodes_from(nodes.keys())
+    G.add_edges_from(edges)
+    
+    # Find connected components
+    connected_components = list(nx.connected_components(G))
+    connected_components.sort(key=len, reverse=True)
+    
+    if len(connected_components) == 1:
+        return edges, {
+            'num_components_before': 1,
+            'num_components_after': 1,
+            'new_edges_added': 0,
+            'is_fully_integrated': True
+        }
+    
+    main_component = connected_components[0]
+    new_edges = []
+    
+    # Connect each isolated component to the main component
+    for comp in connected_components[1:]:
+        comp_nodes = list(comp)
+        
+        min_distance = float('inf')
+        best_pair = None
+        
+        # Find closest node pair between this component and main component
+        for comp_node_id in comp_nodes:
+            comp_pos = nodes[comp_node_id]['pos']
+            comp_x, comp_y = comp_pos
+            
+            for main_node_id in main_component:
+                main_pos = nodes[main_node_id]['pos']
+                main_x, main_y = main_pos
+                
+                dist = np.sqrt((comp_x - main_x)**2 + (comp_y - main_y)**2)
+                
+                if dist < min_distance:
+                    min_distance = dist
+                    best_pair = (comp_node_id, main_node_id, dist)
+        
+        # Add connection if within threshold
+        if best_pair and min_distance <= distance_threshold:
+            n1, n2 = min(best_pair[0], best_pair[1]), max(best_pair[0], best_pair[1])
+            edge_key = (n1, n2)
+            
+            if edge_key not in edges:
+                new_edges.append(edge_key)
+                
+                # Update node adjacency lists
+                pixel_dist = int(round(best_pair[2]))
+                
+                if best_pair[1] not in [adj[0] for adj in nodes[best_pair[0]]['adj']]:
+                    nodes[best_pair[0]]['adj'].append((best_pair[1], pixel_dist))
+                
+                if best_pair[0] not in [adj[0] for adj in nodes[best_pair[1]]['adj']]:
+                    nodes[best_pair[1]]['adj'].append((best_pair[0], pixel_dist))
+    
+    # Combine original and new edges
+    updated_edges = edges.copy()
+    updated_edges.update(new_edges)
+    
+    # Verify integration
+    G_new = nx.Graph()
+    G_new.add_nodes_from(nodes.keys())
+    G_new.add_edges_from(updated_edges)
+    num_components_after = nx.number_connected_components(G_new)
+    
+    integration_info = {
+        'num_components_before': len(connected_components),
+        'num_components_after': num_components_after,
+        'new_edges_added': len(new_edges),
+        'is_fully_integrated': num_components_after == 1,
+        'component_sizes_before': [len(comp) for comp in connected_components]
+    }
+    
+    return updated_edges, integration_info
+
+
 def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """Create CSV data (output as bidirectional edges)"""
     type_labels = {
@@ -628,20 +729,20 @@ if uploaded_file is not None:
             
             # Step 1: Resize
             if resize_enabled:
-                st.info("Step 1/3: Resizing image...")
+                st.info("Step 1/4: Resizing image...")
                 img, orig_h, orig_w = resize_image(img, 480, 360)
                 current_height = 360
-                progress_bar.progress(25)
+                progress_bar.progress(20)
             else:
                 current_height = img.shape[0]
             
             # Step 2: Skeletonization
-            st.info("Step 2/3: Skeletonizing...")
+            st.info("Step 2/4: Skeletonizing...")
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
-            progress_bar.progress(60)
+            progress_bar.progress(50)
             
             # Step 3: Graph construction
-            st.info("Step 3/3: Building graph...")
+            st.info("Step 3/4: Building graph...")
             nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
@@ -649,12 +750,36 @@ if uploaded_file is not None:
                 min_intersection_transitions,
                 min_node_area
             )
-            progress_bar.progress(100)
+            progress_bar.progress(75)
             
             if nodes_data is None or edges_set is None:
                 st.error("❌ Graph detection failed. Please adjust parameters.")
             else:
+                # Step 4: Network integration (optional)
+                integration_info = None
+                if enable_integration:
+                    st.info("Step 4/4: Integrating isolated networks...")
+                    edges_set, integration_info = integrate_isolated_networks(
+                        nodes_data, 
+                        edges_set, 
+                        integration_threshold
+                    )
+                
+                progress_bar.progress(100)
+                
                 st.success(f"✅ Processing complete! Nodes: {len(nodes_data)}, Edges: {len(edges_set)}")
+                
+                # Display integration results
+                if integration_info:
+                    if integration_info['is_fully_integrated']:
+                        st.success(f"🔗 **Network fully integrated!** "
+                                 f"({integration_info['num_components_before']} → 1 component, "
+                                 f"added {integration_info['new_edges_added']} connections)")
+                    else:
+                        st.warning(f"⚠️ **Partial integration**: "
+                                 f"{integration_info['num_components_before']} → "
+                                 f"{integration_info['num_components_after']} components. "
+                                 f"Try increasing the integration distance threshold.")
                 
                 # Display results
                 col1, col2, col3 = st.columns(3)
@@ -726,7 +851,6 @@ if uploaded_file is not None:
                 # Data preview
                 with st.expander("📊 Node Data Preview"):
                     st.write(f"Total nodes: {len(node_data)}")
-                    import pandas as pd
                     df_nodes = pd.DataFrame(
                         node_data,
                         columns=['node_id', 'x_scratch', 'y_scratch', 'type_code', 'type_label']
@@ -765,10 +889,11 @@ else:
         
         1. **Upload Image**: Select an image file from the sidebar
         2. **Distance Scale Settings** (Optional): Enable real distance calculation and enter latitude/longitude range
-        3. **Adjust Parameters**: Adjust various parameters in the sidebar
-        4. **Generate**: Click the "Generate Graph Data" button
-        5. **Review Results**: Check the generated graph and data
-        6. **Download**: Download CSV files and images
+        3. **Network Integration** (Optional): Enable to automatically connect isolated network components
+        4. **Adjust Parameters**: Adjust various parameters in the sidebar
+        5. **Generate**: Click the "Generate Graph Data" button
+        6. **Review Results**: Check the generated graph and data
+        7. **Download**: Download CSV files and images
         
         ### Parameter Descriptions
         
@@ -778,12 +903,28 @@ else:
         - **West/East Longitude**: Left and right longitude of the image
         - **Image Size**: Width and height of the image after resizing (pixels)
         
+        #### Network Integration
+        - **Integrate isolated networks**: Automatically connect disconnected network components
+        - **Integration distance threshold**: Maximum distance (pixels) to bridge isolated components
+        
         #### Image Processing
         - **Image Resize**: Resize to 480x360 for improved processing speed
         - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
         - **Max jump distance**: Noise tolerance (2 recommended normally)
         - **Intersection detection threshold**: Sensitivity of intersection detection
         - **Minimum node area**: Remove small noise
+        
+        ### About Network Integration
+        
+        The network integration feature automatically connects isolated network components by:
+        - Finding the closest node pairs between isolated components and the main network
+        - Adding connecting edges when the distance is within the threshold
+        - Ensuring the final network is fully connected (one component)
+        
+        This is useful when road network extraction produces fragmented results due to:
+        - Image boundaries cutting through roads
+        - Gaps in the original image
+        - Processing artifacts
         
         ### About Distance Calculation
         
