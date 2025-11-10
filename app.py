@@ -258,16 +258,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 elif transitions == 1:
                     is_feature = True
                     node_type = 2  # Endpoint
-                elif transitions == 2:
-                    # カーブ検出：ただし交差点周辺では無視
-                    if intersection_zone[y, x] == 0:  # 交差点ゾーン外のみ
-                        white_indices = [i for i, val in enumerate(neighbors) if val]
-                        if len(white_indices) == 2:
-                            idx1, idx2 = white_indices
-                            distance = min(abs(idx1 - idx2), 8 - abs(idx1 - idx2))
-                            if distance == 2:
-                                is_feature = True
-                                node_type = 1  # Curve/corner
                 
                 if is_feature:
                     feature_map[y, x] = 1
