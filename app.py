@@ -63,7 +63,7 @@ st.sidebar.subheader("Graph Construction")
 curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 30.0, 10.0, 0.5)
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
-min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
+node_cluster_radius = st.sidebar.slider("Node clustering radius (pixels)", 1, 10, 3)
 
 # Debug mode
 st.sidebar.subheader("🐛 Debug")
@@ -223,11 +223,70 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, debug=False):
-    """Graph detection and construction (with corner detection and debug info)"""
+def cluster_nearby_features(feature_pixels, cluster_radius=3):
+    """
+    Cluster nearby feature pixels using distance-based grouping
+    
+    Parameters:
+    - feature_pixels: Dictionary of (y, x) -> node_type
+    - cluster_radius: Maximum distance for pixels to be in same cluster
+    
+    Returns:
+    - clusters: List of cluster dictionaries with 'coords', 'type', 'center'
+    """
+    if not feature_pixels:
+        return []
+    
+    coords = list(feature_pixels.keys())
+    types = [feature_pixels[coord] for coord in coords]
+    
+    # Simple greedy clustering
+    visited = set()
+    clusters = []
+    
+    for i, (y, x) in enumerate(coords):
+        if (y, x) in visited:
+            continue
+        
+        # Start new cluster
+        cluster_coords = [(y, x)]
+        cluster_types = [types[i]]
+        visited.add((y, x))
+        
+        # Find nearby unvisited pixels
+        for j, (y2, x2) in enumerate(coords):
+            if (y2, x2) in visited:
+                continue
+            
+            # Check if close to any pixel in current cluster
+            for cy, cx in cluster_coords:
+                dist = np.sqrt((y2 - cy)**2 + (x2 - cx)**2)
+                if dist <= cluster_radius:
+                    cluster_coords.append((y2, x2))
+                    cluster_types.append(types[j])
+                    visited.add((y2, x2))
+                    break
+        
+        # Determine cluster type (most common)
+        most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
+        
+        # Calculate center
+        center_y = sum(c[0] for c in cluster_coords) / len(cluster_coords)
+        center_x = sum(c[1] for c in cluster_coords) / len(cluster_coords)
+        
+        clusters.append({
+            'coords': cluster_coords,
+            'type': most_common_type,
+            'center': (center_y, center_x)
+        })
+    
+    return clusters
+
+
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, cluster_radius, debug=False):
+    """Graph detection and construction (with improved clustering)"""
     H, W = binary_img.shape
     
-    feature_map = np.zeros_like(binary_img)
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
@@ -238,8 +297,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         'corners_found': 0,
         'endpoints_found': 0,
         'feature_pixels_before_clustering': 0,
-        'regions_found': 0,
-        'regions_kept': 0
+        'clusters_found': 0,
+        'nodes_created': 0
     }
     
     # Detect feature points (intersections, corners, and endpoints)
@@ -266,56 +325,52 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     debug_info['endpoints_found'] += 1
                 
                 if is_feature:
-                    feature_map[y, x] = 1
                     feature_pixels[(y, x)] = node_type
     
     debug_info['feature_pixels_before_clustering'] = len(feature_pixels)
     
-    if feature_map.sum() == 0:
+    if not feature_pixels:
         if debug:
             st.warning(f"⚠️ No feature points detected! Debug info: {debug_info}")
         return None, None, None, debug_info
     
-    # Label and cluster existing feature pixels
-    labeled_img = label(feature_map, connectivity=2)
-    regions = regionprops(labeled_img)
-    debug_info['regions_found'] = len(regions)
+    # Cluster nearby feature pixels
+    clusters = cluster_nearby_features(feature_pixels, cluster_radius)
+    debug_info['clusters_found'] = len(clusters)
     
+    if not clusters:
+        if debug:
+            st.warning(f"⚠️ No clusters created! Debug info: {debug_info}")
+        return None, None, None, debug_info
+    
+    # Create nodes from clusters
     nodes = {}
     coord_to_node_id = np.full((H, W), -1, dtype=int)
     node_id_counter = 1
     
-    for region in regions:
-        if region.area < min_area:
-            continue
-        
-        debug_info['regions_kept'] += 1
+    for cluster in clusters:
         node_id = node_id_counter
-        center_y, center_x = region.centroid
+        center_y, center_x = cluster['center']
         
-        cluster_types = [feature_pixels[(py, px)] for py, px in region.coords if (py, px) in feature_pixels]
-        if cluster_types:
-            most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
-        else:
-            continue
-        
-        # Map actual node region only
-        for y, x in region.coords:
+        # Map cluster coordinates to this node
+        for y, x in cluster['coords']:
             coord_to_node_id[y, x] = node_id
         
         # Create node data
         nodes[node_id] = {
             'pos': (int(center_x), int(center_y)), 
-            'type': most_common_type, 
+            'type': cluster['type'], 
             'adj': [], 
-            'coords': list(region.coords)
+            'coords': cluster['coords']
         }
         
         node_id_counter += 1
     
+    debug_info['nodes_created'] = len(nodes)
+    
     if len(nodes) == 0:
         if debug:
-            st.warning(f"⚠️ No nodes created after clustering! Debug info: {debug_info}")
+            st.warning(f"⚠️ No nodes created! Debug info: {debug_info}")
         return None, None, None, debug_info
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
@@ -742,7 +797,7 @@ if uploaded_file is not None:
                 curvature_threshold,
                 max_jump_distance,
                 min_intersection_transitions,
-                min_node_area,
+                node_cluster_radius,
                 debug=debug_mode
             )
             progress_bar.progress(75)
@@ -759,8 +814,8 @@ if uploaded_file is not None:
                         st.metric("Endpoints", debug_info['endpoints_found'])
                     with col_d3:
                         st.metric("Feature Pixels", debug_info['feature_pixels_before_clustering'])
-                        st.metric("Regions Found", debug_info['regions_found'])
-                    st.metric("Regions Kept (min_area filter)", debug_info['regions_kept'])
+                        st.metric("Clusters Found", debug_info['clusters_found'])
+                    st.metric("Nodes Created", debug_info['nodes_created'])
             
             if nodes_data is None or edges_set is None:
                 st.error("❌ Graph detection failed. Please adjust parameters.")
@@ -770,8 +825,8 @@ if uploaded_file is not None:
                         st.write("- No skeleton pixels found. The image might be too light or preprocessing failed.")
                     elif debug_info['feature_pixels_before_clustering'] == 0:
                         st.write("- No feature points detected. Try lowering 'Intersection detection threshold' to 2.")
-                    elif debug_info['regions_kept'] == 0:
-                        st.write("- All regions filtered out. Try lowering 'Minimum node area' to 1.")
+                    elif debug_info['clusters_found'] == 0:
+                        st.write("- No clusters created. Try increasing 'Node clustering radius'.")
             else:
                 # Step 4: Network integration (optional)
                 integration_info = None
@@ -931,12 +986,12 @@ else:
         - **Curvature split threshold**: Larger values make it easier to recognize as straight lines (1-30)
         - **Max jump distance**: Noise tolerance (2 recommended normally)
         - **Intersection detection threshold**: Sensitivity of intersection detection (2 will also detect corners)
-        - **Minimum node area**: Remove small noise
+        - **Node clustering radius**: Distance (pixels) to group nearby feature points into single nodes (3-5 recommended)
         
         #### Debug Mode
         - **Enable debug mode**: Shows detailed statistics about detection process
         - Helps identify why nodes aren't being detected
-        - Displays counts of intersections, corners, endpoints, and filtering results
+        - Displays counts of intersections, corners, endpoints, clusters, and nodes created
         
         ### Node Types
         
@@ -948,12 +1003,14 @@ else:
         
         ### Troubleshooting
         
-        If no nodes are detected:
-        1. Enable debug mode to see what's happening
-        2. Check if skeleton pixels are found (if 0, image might be too light)
+        If too few nodes are detected:
+        1. Enable debug mode to see clustering results
+        2. Increase "Node clustering radius" to merge nearby features (try 5-7)
         3. Lower "Intersection detection threshold" to 2 to detect corners
-        4. Lower "Minimum node area" to 1 to keep small features
-        5. Try adjusting the adaptive threshold parameters in preprocessing
+        
+        If too many nodes are detected:
+        1. Decrease "Node clustering radius" to separate features (try 2-3)
+        2. Increase minimum thresholds
         """)
     
     # Color legend
