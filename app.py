@@ -62,7 +62,7 @@ resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
 st.sidebar.subheader("Graph Construction")
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 3, 5, 3)
-min_corner_transitions = st.sidebar.slider("Corner detection threshold", 2, 2, 2)
+detect_corners = st.sidebar.checkbox("Detect corners (2-way junctions)", value=True)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
 
 # Network integration settings
@@ -219,8 +219,8 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def detect_and_build_graph(binary_img, max_jump, min_intersection_trans, min_corner_trans, min_area):
-    """Graph detection and construction (intersections, corners, and endpoints only)"""
+def detect_and_build_graph(binary_img, max_jump, min_intersection_trans, detect_corners, min_area):
+    """Graph detection and construction (intersections, corners, and endpoints)"""
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -240,7 +240,7 @@ def detect_and_build_graph(binary_img, max_jump, min_intersection_trans, min_cor
                 if transitions >= min_intersection_trans:
                     is_feature = True
                     node_type = 0  # Intersection
-                elif transitions == min_corner_trans:
+                elif transitions == 2 and detect_corners:
                     is_feature = True
                     node_type = 1  # Corner
                 elif transitions == 1:
@@ -689,7 +689,7 @@ if uploaded_file is not None:
                 skeleton_data,
                 max_jump_distance,
                 min_intersection_transitions,
-                min_corner_transitions,
+                detect_corners,
                 min_node_area
             )
             progress_bar.progress(75)
@@ -853,14 +853,14 @@ else:
         - **Image Resize**: Resize to 480x360 for improved processing speed
         - **Max jump distance**: Noise tolerance (2 recommended normally)
         - **Intersection detection threshold**: Minimum transitions for intersection detection (3+ paths)
-        - **Corner detection threshold**: Transitions for corner detection (exactly 2 paths)
+        - **Detect corners**: Enable detection of 2-way junctions as corner nodes
         - **Minimum node area**: Remove small noise clusters
         
         ### Node Types
         
         The system automatically detects three types of nodes:
         - **Intersection** (Red): Points where 3+ paths meet
-        - **Corner** (Magenta): Points where exactly 2 paths meet at an angle
+        - **Corner** (Magenta): Points where exactly 2 paths meet at an angle (optional)
         - **Endpoint** (Yellow): Terminal points where paths end
         
         ### About Network Integration
