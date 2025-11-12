@@ -64,7 +64,7 @@ curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
-min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 20, 10)
+min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 30, 20)
 path_smoothing = st.sidebar.slider("Path smoothing strength", 1, 9, 5, 2)
 
 # Network integration settings
