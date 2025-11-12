@@ -64,6 +64,7 @@ curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
+min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 20, 10)
 
 # Network integration settings
 st.sidebar.subheader("🔗 Network Integration")
@@ -219,7 +220,7 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node):
     """Graph detection and construction (with improved logic for close intersections)"""
     H, W = binary_img.shape
     
@@ -271,8 +272,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         else:
             continue
         
-        # --- 改善されたノード統合ロジック ---
-        # 実際のノード領域のみをマッピング（拡張領域は後で処理）
+        # Map actual node region only
         for y, x in region.coords:
             coord_to_node_id[y, x] = node_id
         
@@ -281,7 +281,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             'pos': (int(center_x), int(center_y)), 
             'type': most_common_type, 
             'adj': [], 
-            'coords': list(region.coords)  # 実際のノード座標のみ
+            'coords': list(region.coords)
         }
         
         node_id_counter += 1
@@ -294,7 +294,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
-    # エッジ検索の開始点を列挙（ノード座標の直接隣接ピクセルから）
+    # Enumerate edge search starting points
     start_pixels = []
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']: 
@@ -304,25 +304,22 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1):
                     
-                    # 隣接ピクセルがどのノードに属するかチェック
                     neighbor_node_id = coord_to_node_id[neighbor_y, neighbor_x]
                     
-                    # 隣接ピクセルが別のノードに属する場合、直接接続
+                    # Direct connection if adjacent pixel belongs to another node
                     if neighbor_node_id != -1 and neighbor_node_id != node_id:
-                        # 2つのノードが直接接触している場合
                         n1, n2 = min(node_id, neighbor_node_id), max(node_id, neighbor_node_id)
                         edge_key = (n1, n2)
                         
                         if edge_key not in edges:
                             edges.add(edge_key)
                             
-                            # エッジ長は1（直接接触）
                             if neighbor_node_id not in [adj[0] for adj in nodes[node_id]['adj']]:
                                 nodes[node_id]['adj'].append((neighbor_node_id, 1))
                             if node_id not in [adj[0] for adj in nodes[neighbor_node_id]['adj']]:
                                 nodes[neighbor_node_id]['adj'].append((node_id, 1))
                     
-                    # 隣接ピクセルがどのノードにも属さない場合、エッジ開始点候補
+                    # Edge start candidate if not belonging to any node
                     elif neighbor_node_id == -1:
                         start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
@@ -344,11 +341,17 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         current_start_node_id = node_id
         
         while True:
-            # 現在位置が他のノードに属するかチェック
+            # Check if current position belongs to another node
             end_node_id_check = coord_to_node_id[y, x]
-            distance_from_start = len(path)  # 追加
             is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
-            is_split_point = (current_curvature >= curvature_threshold and end_node_id_check == -1 and distance_from_start > min_distance_from_node)  # 追加
+            
+            # Calculate distance from start for split suppression
+            distance_from_start = len(path)
+            is_split_point = (
+                current_curvature >= curvature_threshold 
+                and end_node_id_check == -1
+                and distance_from_start > min_distance_from_node
+            )
             
             if is_end_node or is_split_point:
                 target_node_id = -1
@@ -415,7 +418,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                          continue
                     
                     if binary_img[next_y, next_x] == 1:
-                        # ノードに到達した場合、優先的に選択
+                        # Prioritize if reaching a node
                         if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
                             best_pixel = (next_y, next_x)
                             best_vector = (dy_search, dx_search)
@@ -472,13 +475,13 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
-            color = (0, 0, 255)  # 交差点 - 赤色
+            color = (0, 0, 255)  # Intersection - Red
         elif data['type'] == 1:
-            color = (0, 255, 0)  # コーナー - 緑色
+            color = (0, 255, 0)  # Corner - Green
         elif data['type'] == 2:
-            color = (0, 255, 255)  # 端点 - 黄色
+            color = (0, 255, 255)  # Endpoint - Yellow
         elif data['type'] == 3:
-            color = (0, 165, 255)  # 曲率分割点 - オレンジ色
+            color = (0, 165, 255)  # Curvature split - Orange
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
@@ -714,7 +717,7 @@ if uploaded_file is not None:
                 max_jump_distance,
                 min_intersection_transitions,
                 min_node_area,
-                min_distance_from_node  # ← この行を追加
+                min_distance_from_node
             )
             progress_bar.progress(75)
             
@@ -879,6 +882,7 @@ else:
         - **Max jump distance**: Noise tolerance (2 recommended normally)
         - **Intersection detection threshold**: Sensitivity of intersection detection
         - **Minimum node area**: Remove small noise
+        - **Min distance from intersection**: Suppress curvature splits near intersections (prevents clustering of orange nodes)
         
         ### About Network Integration
         
@@ -898,6 +902,13 @@ else:
         - Edge real distance is calculated using the average scale value
         - Assumes Earth is a sphere and accounts for change in distance per degree of longitude by latitude
         - For more accurate calculations, enter the latitude/longitude of the four corners of the image
+        
+        ### About Curvature Split Suppression
+        
+        The "Min distance from intersection" parameter prevents excessive creation of curvature split points (orange nodes) near intersections:
+        - Set to 10 pixels by default
+        - Higher values create cleaner intersections with fewer intermediate nodes
+        - Lower values allow more detailed curve representation but may clutter intersections
         """)
     
     # Color legend
