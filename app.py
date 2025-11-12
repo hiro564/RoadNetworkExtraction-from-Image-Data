@@ -713,7 +713,7 @@ if uploaded_file is not None:
                 curvature_threshold,
                 max_jump_distance,
                 min_intersection_transitions,
-                min_node_area
+                min_node_area,
                 min_distance_from_node  # ← この行を追加
             )
             progress_bar.progress(75)
