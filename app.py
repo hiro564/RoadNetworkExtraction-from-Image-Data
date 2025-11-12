@@ -64,8 +64,9 @@ curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
-min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 30, 20)
+min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 20, 10)
 path_smoothing = st.sidebar.slider("Path smoothing strength", 1, 9, 5, 2)
+edge_margin = st.sidebar.slider("Ignore edge endpoints (margin pixels)", 0, 20, 5)
 
 # Network integration settings
 st.sidebar.subheader("🔗 Network Integration")
@@ -251,7 +252,7 @@ def smooth_path(path, window_size=3):
     return smoothed
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node, smoothing_window):
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node, smoothing_window, edge_margin):
     """Graph detection and construction (with improved logic for close intersections)"""
     H, W = binary_img.shape
     
@@ -260,6 +261,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     feature_pixels = {}
     
     # Detect feature points (intersections and endpoints only)
+    # edge_margin: 画像の端からこのピクセル数以内の端点は無視
+    
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
@@ -273,6 +276,11 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     is_feature = True
                     node_type = 0  # Intersection
                 elif transitions == 1:
+                    # 端点の場合、画像の端にあるかチェック
+                    if (x < edge_margin or x >= W - edge_margin or 
+                        y < edge_margin or y >= H - edge_margin):
+                        # 画像の端にある端点は無視
+                        continue
                     is_feature = True
                     node_type = 2  # Endpoint
                 
@@ -752,7 +760,8 @@ if uploaded_file is not None:
                 min_intersection_transitions,
                 min_node_area,
                 min_distance_from_node,
-                path_smoothing
+                path_smoothing,
+                edge_margin
             )
             progress_bar.progress(75)
             
@@ -919,6 +928,7 @@ else:
         - **Minimum node area**: Remove small noise
         - **Min distance from intersection**: Suppress curvature splits near intersections (prevents clustering of orange nodes)
         - **Path smoothing strength**: Reduce jaggedness in edge visualization (larger = smoother, 1-9, default: 5)
+        - **Ignore edge endpoints**: Ignore endpoints within this many pixels from image border (0-20, default: 5)
         
         ### About Network Integration
         
