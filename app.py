@@ -7,257 +7,908 @@ import collections
 import csv
 import io
 from PIL import Image
+import tempfile
+import os
 import math
 import networkx as nx
 import pandas as pd
-from sklearn.decomposition import PCA
 
-# --- Streamlit page configuration ---
+# Page configuration
 st.set_page_config(
-    page_title="Image Graph Generation (Curvature-integrated)",
+    page_title="Image Graph Generation App",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Generate Graph Data from Image (Curvature-integrated)")
-st.markdown("Upload a line-based map image to extract intersections, curves, and endpoints, and export CSV graph data.")
+# Title
+st.title("📊 Generate Graph Data from Image")
+st.markdown("Upload an image to perform skeletonization and graph construction, generating CSV data.")
 
-# Sidebar settings
+# Sidebar parameter settings
 st.sidebar.header("⚙️ Settings")
 
-# Distance scale
+# Distance scale settings
 st.sidebar.subheader("📏 Distance Scale Settings")
 enable_distance_scale = st.sidebar.checkbox("Enable real distance calculation", value=False)
 
 if enable_distance_scale:
     st.sidebar.markdown("**Image Range (Latitude/Longitude)**")
+    
     col_lat1, col_lat2 = st.sidebar.columns(2)
     with col_lat1:
-        north_latitude = st.number_input("North Latitude", value=35.1, format="%.6f")
+        north_latitude = st.number_input("North Latitude", value=35.1, format="%.6f", step=0.000001)
     with col_lat2:
-        south_latitude = st.number_input("South Latitude", value=35.0, format="%.6f")
+        south_latitude = st.number_input("South Latitude", value=35.0, format="%.6f", step=0.000001)
+    
     col_lon1, col_lon2 = st.sidebar.columns(2)
     with col_lon1:
-        west_longitude = st.number_input("West Longitude", value=135.0, format="%.6f")
+        west_longitude = st.number_input("West Longitude", value=135.0, format="%.6f", step=0.000001)
     with col_lon2:
-        east_longitude = st.number_input("East Longitude", value=135.1, format="%.6f")
+        east_longitude = st.number_input("East Longitude", value=135.1, format="%.6f", step=0.000001)
+    
+    # Image size (pixels)
+    st.sidebar.markdown("**Image Size (Pixels)**")
     col_size1, col_size2 = st.sidebar.columns(2)
     with col_size1:
-        image_width_px = st.number_input("Width (px)", value=480)
+        image_width_px = st.number_input("Width", value=480, min_value=1)
     with col_size2:
-        image_height_px = st.number_input("Height (px)", value=360)
+        image_height_px = st.number_input("Height", value=360, min_value=1)
 
-# Skeletonization & curvature settings
-st.sidebar.subheader("🧠 Graph Detection Parameters")
-resize_enabled = st.sidebar.checkbox("Resize to 480x360", value=True)
-curvature_threshold = st.sidebar.slider("Curvature node threshold (°)", 5.0, 45.0, 15.0, 1.0)
-curvature_window = st.sidebar.slider("Curvature analysis window size", 3, 10, 5, 1)
-max_jump_distance = st.sidebar.slider("Max jump distance (pixels)", 1, 5, 2)
+# Image processing settings
+st.sidebar.subheader("Image Processing")
+resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
+
+# Graph construction settings
+st.sidebar.subheader("Graph Construction")
+curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 10.0, 0.5)
+max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
 
+# Network integration settings
+st.sidebar.subheader("🔗 Network Integration")
+enable_integration = st.sidebar.checkbox("Integrate isolated networks", value=True)
+if enable_integration:
+    integration_threshold = st.sidebar.slider("Integration distance threshold (pixels)", 5, 50, 30, 5)
+
 # File upload
-uploaded_file = st.file_uploader("Upload map image (road-line type)", type=["png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("Upload image file", type=['png', 'jpg', 'jpeg'])
 
 
-# --- Utility functions ---
+# --- Function definitions ---
 
 def calculate_distance_scale(north_lat, south_lat, west_lon, east_lon, width_px, height_px):
+    """
+    Calculate distance scale from image latitude/longitude range
+    
+    Parameters:
+    - north_lat, south_lat: North and south latitude boundaries
+    - west_lon, east_lon: West and east longitude boundaries
+    - width_px, height_px: Image width and height (pixels)
+    
+    Returns:
+    - meters_per_pixel_x: Meters per pixel horizontally
+    - meters_per_pixel_y: Meters per pixel vertically
+    - meters_per_pixel_avg: Average meters per pixel
+    """
+    # Earth radius (meters)
     EARTH_RADIUS = 6371000
+    
+    # Calculate center latitude
     center_lat = (north_lat + south_lat) / 2
     center_lat_rad = math.radians(center_lat)
+    
+    # Longitude difference (east-west distance)
     lon_diff = abs(east_lon - west_lon)
     lon_diff_rad = math.radians(lon_diff)
-    distance_x_m = EARTH_RADIUS * lon_diff_rad * math.cos(center_lat_rad)
-    meters_per_pixel_x = distance_x_m / width_px
+    distance_x_meters = EARTH_RADIUS * lon_diff_rad * math.cos(center_lat_rad)
+    meters_per_pixel_x = distance_x_meters / width_px
+    
+    # Latitude difference (north-south distance)
     lat_diff = abs(north_lat - south_lat)
     lat_diff_rad = math.radians(lat_diff)
-    distance_y_m = EARTH_RADIUS * lat_diff_rad
-    meters_per_pixel_y = distance_y_m / height_px
-    return (meters_per_pixel_x + meters_per_pixel_y) / 2
+    distance_y_meters = EARTH_RADIUS * lat_diff_rad
+    meters_per_pixel_y = distance_y_meters / height_px
+    
+    # Average value (for diagonal distance calculation)
+    meters_per_pixel_avg = (meters_per_pixel_x + meters_per_pixel_y) / 2
+    
+    return meters_per_pixel_x, meters_per_pixel_y, meters_per_pixel_avg
+
+
+def resize_image(img, target_width=480, target_height=360):
+    """Resize image"""
+    original_height, original_width = img.shape[:2]
+    resized_img = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
+    return resized_img, original_height, original_width
+
+
+def refine_skeleton_branches(skeleton):
+    """Refine skeleton branches"""
+    H, W = skeleton.shape
+    refined = skeleton.copy()
+    
+    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, 1), 
+                   (1, 1), (1, 0), (1, -1), (0, -1)]
+    
+    endpoints = []
+    for y in range(1, H - 1):
+        for x in range(1, W - 1):
+            if skeleton[y, x] == 1:
+                neighbors = [skeleton[y + dy, x + dx] for dy, dx in neighbors_8]
+                neighbor_count = sum(neighbors)
+                
+                if neighbor_count == 1:
+                    endpoints.append((y, x))
+    
+    min_branch_length = 5
+    for start_y, start_x in endpoints:
+        branch_length = 0
+        y, x = start_y, start_x
+        branch_pixels = [(y, x)]
+        
+        while branch_length < min_branch_length:
+            neighbors = []
+            for dy, dx in neighbors_8:
+                ny, nx = y + dy, x + dx
+                if (0 <= ny < H and 0 <= nx < W and 
+                    skeleton[ny, nx] == 1 and (ny, nx) not in branch_pixels):
+                    neighbors.append((ny, nx))
+            
+            if len(neighbors) == 0:
+                break
+            elif len(neighbors) == 1:
+                y, x = neighbors[0]
+                branch_pixels.append((y, x))
+                branch_length += 1
+            else:
+                break
+        
+        if branch_length < min_branch_length and len(neighbors) == 0:
+            for py, px in branch_pixels:
+                refined[py, px] = 0
+    
+    return refined
 
 
 def high_quality_skeletonization(img):
-    """Clean skeletonization with adaptive threshold"""
+    """High-quality skeletonization"""
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
-        gray = img
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 11, 2)
-    binary_bool = (binary > 128).astype(bool)
+        gray = img.copy()
+    
+    denoised = cv2.GaussianBlur(gray, (3, 3), 0)
+    
+    # Use adaptive thresholding to extract lines even with non-uniform background
+    binary = cv2.adaptiveThreshold(
+        denoised, 255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 
+        blockSize=11, 
+        C=2
+    )
+    
+    kernel_small = np.ones((2, 2), np.uint8)
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small)
+    
+    kernel_dilate = np.ones((3, 3), np.uint8)
+    dilated = cv2.dilate(cleaned, kernel_dilate, iterations=1)
+    
+    binary_bool = (dilated > 128).astype(bool)
+    # Skeletonization
     skeleton_bool = skeletonize(binary_bool)
-    return skeleton_bool.astype(np.uint8)
+    skeleton = skeleton_bool.astype(np.uint8)
+    
+    # Remove components that are too small
+    labeled_skeleton = label(skeleton, connectivity=2)
+    regions = regionprops(labeled_skeleton)
+    
+    min_component_size = 5
+    filtered_skeleton = np.zeros_like(skeleton)
+    for region in regions:
+        if region.area >= min_component_size:
+            for coord in region.coords:
+                filtered_skeleton[coord[0], coord[1]] = 1
+    
+    # Remove short branches
+    filtered_skeleton = refine_skeleton_branches(filtered_skeleton)
+    
+    processed_img = (filtered_skeleton * 255).astype(np.uint8)
+    
+    return filtered_skeleton, processed_img
 
 
-# --- Core graph detection function (with curvature integration) ---
-def detect_and_build_graph_with_curvature(binary_img,
-                                          curvature_threshold=15.0,
-                                          curvature_window=5,
-                                          max_jump=2,
-                                          min_transitions=3,
-                                          min_node_area=1):
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
+    """Graph detection and construction (with improved logic for close intersections)"""
     H, W = binary_img.shape
-    neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1),
-                       (1, 1), (1, 0), (1, -1), (0, -1)]
-
-    # 1️⃣ トポロジ特徴点 (交差点・端点)
+    
     feature_map = np.zeros_like(binary_img)
+    neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
+    
+    # Detect feature points (intersections and endpoints only)
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
-                neighbors = [binary_img[y + dy, x + dx] for dy, dx in neighbors_coord]
+                neighbors = [(binary_img[y + dy, x + dx]) for dy, dx in neighbors_coord]
                 transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
+                
+                is_feature = False
+                node_type = -1
+                
                 if transitions >= min_transitions:
-                    feature_map[y, x] = 1
-                    feature_pixels[(y, x)] = 0  # intersection
+                    is_feature = True
+                    node_type = 0  # Intersection
                 elif transitions == 1:
+                    is_feature = True
+                    node_type = 2  # Endpoint
+                
+                if is_feature:
                     feature_map[y, x] = 1
-                    feature_pixels[(y, x)] = 2  # endpoint
-
-    # 2️⃣ 曲率ノード検出 (PCA法)
-    ys, xs = np.nonzero(binary_img)
-    curvature_map = np.zeros_like(binary_img, dtype=np.uint8)
-    for (y, x) in zip(ys, xs):
-        y1, y2 = max(0, y - curvature_window), min(H, y + curvature_window + 1)
-        x1, x2 = max(0, x - curvature_window), min(W, x + curvature_window + 1)
-        region = binary_img[y1:y2, x1:x2]
-        pts = np.column_stack(np.nonzero(region))
-        if len(pts) < 3:
-            continue
-        pca = PCA(n_components=2)
-        pca.fit(pts - np.mean(pts, axis=0))
-        dir1 = pca.components_[0]
-        ny, nx = y + 1, x
-        if ny < H and binary_img[ny, nx] == 1:
-            y1b, y2b = max(0, ny - curvature_window), min(H, ny + curvature_window + 1)
-            x1b, x2b = max(0, nx - curvature_window), min(W, nx + curvature_window + 1)
-            region_b = binary_img[y1b:y2b, x1b:x2b]
-            pts_b = np.column_stack(np.nonzero(region_b))
-            if len(pts_b) >= 3:
-                pca_b = PCA(n_components=2)
-                pca_b.fit(pts_b - np.mean(pts_b, axis=0))
-                dir2 = pca_b.components_[0]
-                angle = np.degrees(np.arccos(np.clip(np.dot(dir1, dir2), -1, 1)))
-                if angle > curvature_threshold:
-                    curvature_map[y, x] = 1
-                    feature_map[y, x] = 1
-                    feature_pixels[(y, x)] = 1  # curve node
-
-    # 3️⃣ ノードクラスタ統合
+                    feature_pixels[(y, x)] = node_type
+    
+    if feature_map.sum() == 0:
+        return None, None, None
+    
+    # Label and cluster existing feature pixels
     labeled_img = label(feature_map, connectivity=2)
     regions = regionprops(labeled_img)
+    
     nodes = {}
     coord_to_node_id = np.full((H, W), -1, dtype=int)
-    node_id = 1
+    node_id_counter = 1
+    
     for region in regions:
-        if region.area < min_node_area:
+        if region.area < min_area:
             continue
-        cy, cx = region.centroid
-        types = [feature_pixels.get((y, x), -1) for y, x in region.coords]
-        major_type = collections.Counter(types).most_common(1)[0][0]
-        nodes[node_id] = {'pos': (int(cx), int(cy)),
-                          'type': major_type,
-                          'adj': [],
-                          'coords': list(region.coords)}
-        for (y, x) in region.coords:
+        node_id = node_id_counter
+        center_y, center_x = region.centroid
+        
+        cluster_types = [feature_pixels[(py, px)] for py, px in region.coords if (py, px) in feature_pixels]
+        if cluster_types:
+            most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
+        else:
+            continue
+        
+        # --- 改善されたノード統合ロジック ---
+        # 実際のノード領域のみをマッピング（拡張領域は後で処理）
+        for y, x in region.coords:
             coord_to_node_id[y, x] = node_id
-        node_id += 1
-
-    # 4️⃣ エッジ構築
-    edges = set()
-    edge_visited = np.full((H, W), -1, dtype=int)
-    edge_id = 0
-    for nid, nd in nodes.items():
-        for (y, x) in nd['coords']:
-            for dy, dx in neighbors_coord:
-                ny, nx = y + dy, x + dx
-                if not (0 <= ny < H and 0 <= nx < W):
-                    continue
-                if binary_img[ny, nx] != 1:
-                    continue
-                nid2 = coord_to_node_id[ny, nx]
-                if nid2 != -1 and nid2 != nid:
-                    ek = tuple(sorted((nid, nid2)))
-                    if ek not in edges:
-                        edges.add(ek)
-                        nodes[nid]['adj'].append((nid2, 1))
-                        nodes[nid2]['adj'].append((nid, 1))
-    # ノード描画
+        
+        # Create node data
+        nodes[node_id] = {
+            'pos': (int(center_x), int(center_y)), 
+            'type': most_common_type, 
+            'adj': [], 
+            'coords': list(region.coords)  # 実際のノード座標のみ
+        }
+        
+        node_id_counter += 1
+    
+    if len(nodes) == 0:
+        return None, None, None
+    
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
-    for nid, nd in nodes.items():
-        x, y = nd['pos']
-        color = (255, 0, 0) if nd['type'] == 0 else (0, 255, 0) if nd['type'] == 1 else (0, 255, 255)
-        cv2.circle(marked_img, (x, y), 4, color, -1)
+    edges = set()
+    edge_visited_map = np.full((H, W), -1, dtype=int)
+    edge_id_counter = 0
+    
+    # エッジ検索の開始点を列挙（ノード座標の直接隣接ピクセルから）
+    start_pixels = []
+    for node_id, node_data in nodes.items():
+        for start_y, start_x in node_data['coords']: 
+            for dy, dx in neighbors_coord:
+                neighbor_y, neighbor_x = start_y + dy, start_x + dx
+                
+                if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
+                    binary_img[neighbor_y, neighbor_x] == 1):
+                    
+                    # 隣接ピクセルがどのノードに属するかチェック
+                    neighbor_node_id = coord_to_node_id[neighbor_y, neighbor_x]
+                    
+                    # 隣接ピクセルが別のノードに属する場合、直接接続
+                    if neighbor_node_id != -1 and neighbor_node_id != node_id:
+                        # 2つのノードが直接接触している場合
+                        n1, n2 = min(node_id, neighbor_node_id), max(node_id, neighbor_node_id)
+                        edge_key = (n1, n2)
+                        
+                        if edge_key not in edges:
+                            edges.add(edge_key)
+                            
+                            # エッジ長は1（直接接触）
+                            if neighbor_node_id not in [adj[0] for adj in nodes[node_id]['adj']]:
+                                nodes[node_id]['adj'].append((neighbor_node_id, 1))
+                            if node_id not in [adj[0] for adj in nodes[neighbor_node_id]['adj']]:
+                                nodes[neighbor_node_id]['adj'].append((node_id, 1))
+                    
+                    # 隣接ピクセルがどのノードにも属さない場合、エッジ開始点候補
+                    elif neighbor_node_id == -1:
+                        start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
+    
+    processed_starts = set()
+    
+    # Edge search
+    for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
+        start_key = (node_id, initial_y, initial_x)
+        if start_key in processed_starts:
+            continue
+        if edge_visited_map[initial_y, initial_x] != -1:
+            continue
+        
+        path = []
+        temp_path_visited = set()
+        y, x = initial_y, initial_x
+        prev_dy, prev_dx = initial_y - start_y, initial_x - start_x
+        current_curvature = 0.0
+        current_start_node_id = node_id
+        
+        while True:
+            # 現在位置が他のノードに属するかチェック
+            end_node_id_check = coord_to_node_id[y, x]
+            is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
+            is_split_point = (current_curvature >= curvature_threshold) and (end_node_id_check == -1)
+            
+            if is_end_node or is_split_point:
+                target_node_id = -1
+                if is_end_node:
+                    target_node_id = end_node_id_check
+                elif is_split_point:
+                    target_node_id = node_id_counter
+                    nodes[target_node_id] = {
+                        'pos': (x, y), 
+                        'type': 3, 
+                        'adj': [], 
+                        'coords': [(y, x)]
+                    }
+                    coord_to_node_id[y, x] = target_node_id
+                    node_id_counter += 1
+                
+                n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
+                edge_key = (n1, n2)
+                
+                if current_start_node_id == node_id or edge_key not in edges:
+                    edges.add(edge_key)
+                    length = len(path)
+                    
+                    existing_adj = [adj[0] for adj in nodes[current_start_node_id]['adj']]
+                    if target_node_id not in existing_adj:
+                        nodes[current_start_node_id]['adj'].append((target_node_id, length))
+
+                    existing_adj = [adj[0] for adj in nodes[target_node_id]['adj']]
+                    if current_start_node_id not in existing_adj:
+                        nodes[target_node_id]['adj'].append((current_start_node_id, length))
+                    
+                    edge_id_counter += 1
+                    for py, px in path:
+                        marked_img[py, px] = (0, 255, 0)
+                        edge_visited_map[py, px] = edge_id_counter
+                
+                if is_end_node:
+                    break
+                elif is_split_point:
+                    current_start_node_id = target_node_id
+                    current_curvature = 0.0
+                    path = []
+            
+            if edge_visited_map[y, x] != -1:
+                break
+            
+            path.append((y, x))
+            temp_path_visited.add((y, x))
+            
+            best_pixel = None
+            best_vector = (0, 0)
+            best_score = -2
+            
+            for dy_search in range(-max_jump, max_jump + 1):
+                for dx_search in range(-max_jump, max_jump + 1):
+                    if dy_search == 0 and dx_search == 0:
+                        continue
+                    next_y, next_x = y + dy_search, x + dx_search
+                    
+                    if not (0 <= next_y < H and 0 <= next_x < W):
+                        continue
+                    
+                    if (next_y, next_x) in temp_path_visited or edge_visited_map[next_y, next_x] != -1:
+                         continue
+                    
+                    if binary_img[next_y, next_x] == 1:
+                        # ノードに到達した場合、優先的に選択
+                        if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
+                            best_pixel = (next_y, next_x)
+                            best_vector = (dy_search, dx_search)
+                            best_score = 10
+                            break
+                            
+                        current_vector = (dy_search, dx_search)
+                        is_adjacent = max(abs(dy_search), abs(dx_search)) == 1
+                        is_jump = max(abs(dy_search), abs(dx_search)) == 2
+                        
+                        if is_adjacent:
+                            score = prev_dy * dy_search + prev_dx * dx_search
+                            if score > best_score:
+                                best_score = score
+                                best_pixel = (next_y, next_x)
+                                best_vector = current_vector
+                        
+                        elif is_jump:
+                            mid_y1, mid_x1 = y + dy_search//2, x + dx_search//2
+                            if binary_img[mid_y1, mid_x1] == 0:
+                                score = prev_dy * dy_search + prev_dx * dx_search - 3
+                                if score > best_score:
+                                    best_score = score
+                                    best_pixel = (next_y, next_x)
+                                    best_vector = current_vector
+                
+                if best_score == 10:
+                    break
+            
+            if best_pixel:
+                new_dy, new_dx = best_vector
+                
+                if coord_to_node_id[best_pixel[0], best_pixel[1]] != -1 and coord_to_node_id[best_pixel[0], best_pixel[1]] != current_start_node_id:
+                    y, x = best_pixel
+                    prev_dy, prev_dx = new_dy, new_dx
+                    continue
+                
+                curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
+                current_curvature += curvature_change
+                
+                if max(abs(new_dy), abs(new_dx)) == 2:
+                    mid_y, mid_x = y + new_dy//2, x + new_dx//2
+                    path.append((mid_y, mid_x))
+                    temp_path_visited.add((mid_y, mid_x))
+                
+                y, x = best_pixel
+                prev_dy, prev_dx = new_dy, new_dx
+            else:
+                break
+        
+        processed_starts.add((node_id, initial_y, initial_x))
+    
+    # Draw nodes
+    for node_id, data in nodes.items():
+        x, y = data['pos']
+        if data['type'] == 0:
+            color = (255, 0, 0)  # Intersection
+        elif data['type'] == 2:
+            color = (0, 255, 255)  # Endpoint
+        elif data['type'] == 3:
+            color = (0, 165, 255)  # Curvature split
+        else:
+            color = (128, 128, 128)  # Other
+        
+        radius = 5 if data['type'] != 3 else 3
+        cv2.circle(marked_img, (x, y), radius, color, -1)
+    
     return nodes, edges, marked_img
 
 
-def create_csv_data(nodes, edges, img_h, meters_per_pixel=None):
-    node_rows, edge_rows = [], []
-    type_labels = {0: 'Intersection', 1: 'Curve', 2: 'Endpoint'}
-    for nid, nd in nodes.items():
-        x, y = nd['pos']
-        x_s, y_s = int(round(x - 240)), int(round(img_h / 2 - y))
-        node_rows.append([nid, x_s, y_s, nd['type'], type_labels.get(nd['type'], 'Unknown')])
-    eid = 1
+def integrate_isolated_networks(nodes, edges, distance_threshold=30):
+    """
+    Integrate isolated network components by connecting them to the main component
+    
+    Parameters:
+    - nodes: Dictionary of node data
+    - edges: Set of edges (tuples of node IDs)
+    - distance_threshold: Maximum distance in pixels to connect components
+    
+    Returns:
+    - updated_edges: Set of edges including new bridging edges
+    - integration_info: Dictionary containing integration statistics
+    """
+    # Build graph using NetworkX
+    G = nx.Graph()
+    G.add_nodes_from(nodes.keys())
+    G.add_edges_from(edges)
+    
+    # Find connected components
+    connected_components = list(nx.connected_components(G))
+    connected_components.sort(key=len, reverse=True)
+    
+    if len(connected_components) == 1:
+        return edges, {
+            'num_components_before': 1,
+            'num_components_after': 1,
+            'new_edges_added': 0,
+            'is_fully_integrated': True
+        }
+    
+    main_component = connected_components[0]
+    new_edges = []
+    
+    # Connect each isolated component to the main component
+    for comp in connected_components[1:]:
+        comp_nodes = list(comp)
+        
+        min_distance = float('inf')
+        best_pair = None
+        
+        # Find closest node pair between this component and main component
+        for comp_node_id in comp_nodes:
+            comp_pos = nodes[comp_node_id]['pos']
+            comp_x, comp_y = comp_pos
+            
+            for main_node_id in main_component:
+                main_pos = nodes[main_node_id]['pos']
+                main_x, main_y = main_pos
+                
+                dist = np.sqrt((comp_x - main_x)**2 + (comp_y - main_y)**2)
+                
+                if dist < min_distance:
+                    min_distance = dist
+                    best_pair = (comp_node_id, main_node_id, dist)
+        
+        # Add connection if within threshold
+        if best_pair and min_distance <= distance_threshold:
+            n1, n2 = min(best_pair[0], best_pair[1]), max(best_pair[0], best_pair[1])
+            edge_key = (n1, n2)
+            
+            if edge_key not in edges:
+                new_edges.append(edge_key)
+                
+                # Update node adjacency lists
+                pixel_dist = int(round(best_pair[2]))
+                
+                if best_pair[1] not in [adj[0] for adj in nodes[best_pair[0]]['adj']]:
+                    nodes[best_pair[0]]['adj'].append((best_pair[1], pixel_dist))
+                
+                if best_pair[0] not in [adj[0] for adj in nodes[best_pair[1]]['adj']]:
+                    nodes[best_pair[1]]['adj'].append((best_pair[0], pixel_dist))
+    
+    # Combine original and new edges
+    updated_edges = edges.copy()
+    updated_edges.update(new_edges)
+    
+    # Verify integration
+    G_new = nx.Graph()
+    G_new.add_nodes_from(nodes.keys())
+    G_new.add_edges_from(updated_edges)
+    num_components_after = nx.number_connected_components(G_new)
+    
+    integration_info = {
+        'num_components_before': len(connected_components),
+        'num_components_after': num_components_after,
+        'new_edges_added': len(new_edges),
+        'is_fully_integrated': num_components_after == 1,
+        'component_sizes_before': [len(comp) for comp in connected_components]
+    }
+    
+    return updated_edges, integration_info
+
+
+def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
+    """Create CSV data (output as bidirectional edges)"""
+    type_labels = {
+        0: 'Intersection',
+        2: 'Endpoint',
+        3: 'Intermediate (Curvature Split)'
+    }
+    
+    # Node CSV
+    node_data = []
+    for node_id, data in nodes.items():
+        x_pixel, y_pixel = data['pos']
+        node_type = data['type']
+        
+        # Convert to Scratch coordinate system (origin at center, y-axis upward)
+        x_scratch = int(round(x_pixel - 240))  # For 480 width
+        y_scratch = int(round(image_height / 2 - y_pixel))
+        
+        node_data.append([
+            node_id,
+            x_scratch,
+            y_scratch,
+            node_type,
+            type_labels.get(node_type, 'Unknown')
+        ])
+    
+    # Edge CSV (output as bidirectional)
+    edge_data = []
+    edge_id = 1
+    
+    # Generate bidirectional edges from edges set (undirected edges)
     for n1, n2 in edges:
-        length = 1
-        if meters_per_pixel:
-            dist = length * meters_per_pixel
-            edge_rows.append([eid, n1, n2, length, f"{dist:.2f}"])
-            eid += 1
-            edge_rows.append([eid, n2, n1, length, f"{dist:.2f}"])
+        # Get edge length (from n1's adj list)
+        length = None
+        for neighbor_id, edge_length in nodes[n1]['adj']:
+            if neighbor_id == n2:
+                length = edge_length
+                break
+        
+        if length is None:
+            # Also try from n2's adj list
+            for neighbor_id, edge_length in nodes[n2]['adj']:
+                if neighbor_id == n1:
+                    length = edge_length
+                    break
+        
+        if length is None:
+            continue
+        
+        # Output as 2 rows for bidirectional edge
+        if meters_per_pixel is not None:
+            distance_meters = length * meters_per_pixel
+            
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length, f"{distance_meters:.2f}"])
+            edge_id += 1
+            
+            # n2 -> n1 (reverse direction)
+            edge_data.append([edge_id, n2, n1, length, f"{distance_meters:.2f}"])
+            edge_id += 1
         else:
-            edge_rows.append([eid, n1, n2, length])
-            eid += 1
-            edge_rows.append([eid, n2, n1, length])
-            eid += 1
-    return node_rows, edge_rows
+            # n1 -> n2
+            edge_data.append([edge_id, n1, n2, length])
+            edge_id += 1
+            
+            # n2 -> n1 (reverse direction)
+            edge_data.append([edge_id, n2, n1, length])
+            edge_id += 1
+    
+    return node_data, edge_data
 
 
-# --- Main process ---
-if uploaded_file:
+def create_csv_file(data, header):
+    """Create CSV string"""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(header)
+    writer.writerows(data)
+    return output.getvalue()
+
+
+# --- Main processing ---
+
+if uploaded_file is not None:
+    # Load image
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    
     st.success("✅ Image uploaded successfully")
-
+    
+    # Display distance scale calculation
     if enable_distance_scale:
-        m_per_px = calculate_distance_scale(
-            north_latitude, south_latitude,
-            west_longitude, east_longitude,
-            image_width_px, image_height_px
+        m_per_px_x, m_per_px_y, m_per_px_avg = calculate_distance_scale(
+            north_latitude, 
+            south_latitude,
+            west_longitude, 
+            east_longitude, 
+            image_width_px,
+            image_height_px
         )
-        st.info(f"1 px ≈ {m_per_px:.2f} m")
-
+        
+        center_lat = (north_latitude + south_latitude) / 2
+        
+        st.info(f"📏 **Distance Scale Calculation Results** (Center latitude: {center_lat:.6f}°)\n\n"
+                f"- Horizontal: 1px = {m_per_px_x:.2f} m (Longitude diff {abs(east_longitude - west_longitude):.6f}°)\n"
+                f"- Vertical: 1px = {m_per_px_y:.2f} m (Latitude diff {abs(north_latitude - south_latitude):.6f}°)\n"
+                f"- Average: 1px = {m_per_px_avg:.2f} m")
+    
+    # Processing execution button
     if st.button("🚀 Generate Graph Data", type="primary"):
         with st.spinner("Processing..."):
+            progress_bar = st.progress(0)
+            
+            # Step 1: Resize
             if resize_enabled:
-                img = cv2.resize(img, (480, 360))
-            skeleton = high_quality_skeletonization(img)
-            nodes, edges, marked = detect_and_build_graph_with_curvature(
-                skeleton,
+                st.info("Step 1/4: Resizing image...")
+                img, orig_h, orig_w = resize_image(img, 480, 360)
+                current_height = 360
+                progress_bar.progress(20)
+            else:
+                current_height = img.shape[0]
+            
+            # Step 2: Skeletonization
+            st.info("Step 2/4: Skeletonizing...")
+            skeleton_data, skeleton_visual = high_quality_skeletonization(img)
+            progress_bar.progress(50)
+            
+            # Step 3: Graph construction
+            st.info("Step 3/4: Building graph...")
+            nodes_data, edges_set, marked_img = detect_and_build_graph(
+                skeleton_data,
                 curvature_threshold,
-                curvature_window,
                 max_jump_distance,
                 min_intersection_transitions,
                 min_node_area
             )
-            st.success(f"Nodes: {len(nodes)}, Edges: {len(edges)}")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Original", use_container_width=True)
-            with col2:
-                st.image(skeleton * 255, caption="Skeleton", use_container_width=True)
-            with col3:
-                st.image(cv2.cvtColor(marked, cv2.COLOR_BGR2RGB), caption="Detected Graph", use_container_width=True)
-
-            node_csv, edge_csv = create_csv_data(nodes, edges, 360, m_per_px if enable_distance_scale else None)
-            n_df = pd.DataFrame(node_csv, columns=['id', 'x', 'y', 'type', 'label'])
-            e_df = pd.DataFrame(edge_csv, columns=['eid', 'from', 'to', 'len', 'm'] if enable_distance_scale else ['eid', 'from', 'to', 'len'])
-            st.download_button("⬇️ Download Node CSV", n_df.to_csv(index=False), "nodes.csv", "text/csv")
-            st.download_button("⬇️ Download Edge CSV", e_df.to_csv(index=False), "edges.csv", "text/csv")
+            progress_bar.progress(75)
+            
+            if nodes_data is None or edges_set is None:
+                st.error("❌ Graph detection failed. Please adjust parameters.")
+            else:
+                # Step 4: Network integration (optional)
+                integration_info = None
+                if enable_integration:
+                    st.info("Step 4/4: Integrating isolated networks...")
+                    edges_set, integration_info = integrate_isolated_networks(
+                        nodes_data, 
+                        edges_set, 
+                        integration_threshold
+                    )
+                
+                progress_bar.progress(100)
+                
+                st.success(f"✅ Processing complete! Nodes: {len(nodes_data)}, Edges: {len(edges_set)}")
+                
+                # Display integration results
+                if integration_info:
+                    if integration_info['is_fully_integrated']:
+                        st.success(f"🔗 **Network fully integrated!** "
+                                 f"({integration_info['num_components_before']} → 1 component, "
+                                 f"added {integration_info['new_edges_added']} connections)")
+                    else:
+                        st.warning(f"⚠️ **Partial integration**: "
+                                 f"{integration_info['num_components_before']} → "
+                                 f"{integration_info['num_components_after']} components. "
+                                 f"Try increasing the integration distance threshold.")
+                
+                # Display results
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.subheader("Original Image")
+                    st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), use_container_width=True)
+                
+                with col2:
+                    st.subheader("Skeleton Image")
+                    st.image(skeleton_visual, use_container_width=True)
+                
+                with col3:
+                    st.subheader("Graph Image")
+                    st.image(cv2.cvtColor(marked_img, cv2.COLOR_BGR2RGB), use_container_width=True)
+                
+                # Generate CSV data
+                if enable_distance_scale:
+                    node_data, edge_data = create_csv_data(
+                        nodes_data, edges_set, current_height, m_per_px_avg
+                    )
+                else:
+                    node_data, edge_data = create_csv_data(
+                        nodes_data, edges_set, current_height
+                    )
+                
+                # Download buttons
+                st.subheader("📥 Data Download")
+                
+                col_dl1, col_dl2, col_dl3 = st.columns(3)
+                
+                with col_dl1:
+                    node_csv = create_csv_file(
+                        node_data,
+                        ['node_id', 'x_scratch', 'y_scratch', 'type_code', 'type_label']
+                    )
+                    st.download_button(
+                        label="Download Node CSV",
+                        data=node_csv,
+                        file_name="nodes.csv",
+                        mime="text/csv"
+                    )
+                
+                with col_dl2:
+                    if enable_distance_scale:
+                        edge_header = ['edge_id', 'from_node_id', 'to_node_id', 'pixel_length', 'distance_meters']
+                    else:
+                        edge_header = ['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
+                    
+                    edge_csv = create_csv_file(edge_data, edge_header)
+                    st.download_button(
+                        label="Download Edge CSV",
+                        data=edge_csv,
+                        file_name="edges.csv",
+                        mime="text/csv"
+                    )
+                
+                with col_dl3:
+                    # Download graph image
+                    is_success, buffer = cv2.imencode(".png", marked_img)
+                    if is_success:
+                        st.download_button(
+                            label="Download Graph Image",
+                            data=buffer.tobytes(),
+                            file_name="graph_marked.png",
+                            mime="image/png"
+                        )
+                
+                # Data preview
+                with st.expander("📊 Node Data Preview"):
+                    st.write(f"Total nodes: {len(node_data)}")
+                    df_nodes = pd.DataFrame(
+                        node_data,
+                        columns=['node_id', 'x_scratch', 'y_scratch', 'type_code', 'type_label']
+                    )
+                    st.dataframe(df_nodes.head(10))
+                
+                with st.expander("🔗 Edge Data Preview"):
+                    st.write(f"Total edges: {len(edge_data)}")
+                    if enable_distance_scale:
+                        df_edges = pd.DataFrame(
+                            edge_data,
+                            columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length', 'distance_meters']
+                        )
+                    else:
+                        df_edges = pd.DataFrame(
+                            edge_data,
+                            columns=['edge_id', 'from_node_id', 'to_node_id', 'pixel_length']
+                        )
+                    st.dataframe(df_edges.head(10))
+                    
+                    # Display distance statistics
+                    if enable_distance_scale:
+                        st.markdown("**Distance Statistics**")
+                        total_distance = sum([float(row[4]) for row in edge_data])
+                        avg_distance = total_distance / len(edge_data) if edge_data else 0
+                        st.write(f"- Total distance: {total_distance:.2f} m ({total_distance/1000:.2f} km)")
+                        st.write(f"- Average edge length: {avg_distance:.2f} m")
 
 else:
-    st.info("👆 Please upload a road-line image.")
+    st.info("👆 Please select an image from the file uploader on the left")
+    
+    # Usage instructions
+    with st.expander("📖 How to Use"):
+        st.markdown("""
+        ### How to Use
+        
+        1. **Upload Image**: Select an image file from the sidebar
+        2. **Distance Scale Settings** (Optional): Enable real distance calculation and enter latitude/longitude range
+        3. **Network Integration** (Optional): Enable to automatically connect isolated network components
+        4. **Adjust Parameters**: Adjust various parameters in the sidebar
+        5. **Generate**: Click the "Generate Graph Data" button
+        6. **Review Results**: Check the generated graph and data
+        7. **Download**: Download CSV files and images
+        
+        ### Parameter Descriptions
+        
+        #### Distance Scale Settings
+        - **Enable real distance calculation**: Convert pixel length to real distance (meters)
+        - **North/South Latitude**: Top and bottom latitude of the image
+        - **West/East Longitude**: Left and right longitude of the image
+        - **Image Size**: Width and height of the image after resizing (pixels)
+        
+        #### Network Integration
+        - **Integrate isolated networks**: Automatically connect disconnected network components
+        - **Integration distance threshold**: Maximum distance (pixels) to bridge isolated components
+        
+        #### Image Processing
+        - **Image Resize**: Resize to 480x360 for improved processing speed
+        - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
+        - **Max jump distance**: Noise tolerance (2 recommended normally)
+        - **Intersection detection threshold**: Sensitivity of intersection detection
+        - **Minimum node area**: Remove small noise
+        
+        ### About Network Integration
+        
+        The network integration feature automatically connects isolated network components by:
+        - Finding the closest node pairs between isolated components and the main network
+        - Adding connecting edges when the distance is within the threshold
+        - Ensuring the final network is fully connected (one component)
+        
+        This is useful when road network extraction produces fragmented results due to:
+        - Image boundaries cutting through roads
+        - Gaps in the original image
+        - Processing artifacts
+        
+        ### About Distance Calculation
+        
+        - Distance scale is calculated horizontally and vertically from the image's latitude/longitude range
+        - Edge real distance is calculated using the average scale value
+        - Assumes Earth is a sphere and accounts for change in distance per degree of longitude by latitude
+        - For more accurate calculations, enter the latitude/longitude of the four corners of the image
+        """)
+    
+    # Color legend
+    with st.expander("🎨 Node Color Meanings"):
+        col_legend1, col_legend2, col_legend3 = st.columns(3)
+        
+        with col_legend1:
+            st.markdown("🔴 **Red**: Intersection")
+        with col_legend2:
+            st.markdown("🟡 **Yellow**: Endpoint")
+        with col_legend3:
+            st.markdown("🟠 **Orange**: Curvature split point")
+
+# Footer
+st.markdown("---")
+st.markdown("Made with ❤️ using Streamlit")
