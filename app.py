@@ -60,7 +60,8 @@ resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
 
 # Graph construction settings
 st.sidebar.subheader("Graph Construction")
-curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 10.0, 0.5)
+corner_curvature_threshold = st.sidebar.slider("Corner detection curvature threshold", 5.0, 30.0, 15.0, 1.0)
+corner_window_size = st.sidebar.slider("Corner detection window size", 3, 9, 5, 2)
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
@@ -219,15 +220,127 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
-    """Graph detection and construction (with improved logic for close intersections)"""
+def calculate_local_curvature(skeleton, y, x, window_size):
+    """
+    Calculate local curvature at a skeleton point
+    
+    Parameters:
+    - skeleton: Binary skeleton image
+    - y, x: Point coordinates
+    - window_size: Window size for curvature calculation
+    
+    Returns:
+    - curvature: Curvature value (higher = sharper turn)
+    """
+    H, W = skeleton.shape
+    half_window = window_size // 2
+    
+    # Collect skeleton points in the local window
+    local_points = []
+    for dy in range(-half_window, half_window + 1):
+        for dx in range(-half_window, half_window + 1):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < H and 0 <= nx < W and skeleton[ny, nx] == 1:
+                local_points.append((ny, nx))
+    
+    if len(local_points) < 3:
+        return 0.0
+    
+    # Sort points by distance from center
+    local_points.sort(key=lambda p: (p[0] - y)**2 + (p[1] - x)**2)
+    
+    # Take closest points in different directions
+    directions = []
+    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, 1), 
+                   (1, 1), (1, 0), (1, -1), (0, -1)]
+    
+    for dy, dx in neighbors_8:
+        for dist in range(1, half_window + 1):
+            ny, nx = y + dy * dist, x + dx * dist
+            if 0 <= ny < H and 0 <= nx < W and skeleton[ny, nx] == 1:
+                directions.append((dy, dx))
+                break
+    
+    if len(directions) < 2:
+        return 0.0
+    
+    # Calculate angle changes between direction vectors
+    max_angle_change = 0.0
+    for i in range(len(directions)):
+        for j in range(i + 1, len(directions)):
+            dy1, dx1 = directions[i]
+            dy2, dx2 = directions[j]
+            
+            # Dot product for angle calculation
+            dot_product = dy1 * dy2 + dx1 * dx2
+            mag1 = math.sqrt(dy1**2 + dx1**2)
+            mag2 = math.sqrt(dy2**2 + dx2**2)
+            
+            if mag1 > 0 and mag2 > 0:
+                cos_angle = dot_product / (mag1 * mag2)
+                cos_angle = max(-1.0, min(1.0, cos_angle))  # Clamp to [-1, 1]
+                angle = math.acos(cos_angle)
+                angle_deg = math.degrees(angle)
+                max_angle_change = max(max_angle_change, angle_deg)
+    
+    return max_angle_change
+
+
+def detect_corners_curvature(skeleton, window_size=5, curvature_threshold=15.0):
+    """
+    Detect corners on skeleton using curvature-based method
+    
+    Parameters:
+    - skeleton: Binary skeleton image
+    - window_size: Window size for local curvature calculation
+    - curvature_threshold: Minimum curvature to be considered a corner
+    
+    Returns:
+    - corners: Binary mask of detected corners
+    """
+    H, W = skeleton.shape
+    corners = np.zeros_like(skeleton)
+    
+    neighbors_8 = [(-1, -1), (-1, 0), (-1, 1), (0, 1), 
+                   (1, 1), (1, 0), (1, -1), (0, -1)]
+    
+    for y in range(window_size, H - window_size):
+        for x in range(window_size, W - window_size):
+            if skeleton[y, x] == 1:
+                # Check if it's not an endpoint or intersection
+                neighbors = [skeleton[y + dy, x + dx] for dy, dx in neighbors_8]
+                neighbor_count = sum(neighbors)
+                transitions = sum(neighbors[i] == 0 and neighbors[(i + 1) % 8] == 1 for i in range(8))
+                
+                # Only calculate curvature for regular skeleton points (not endpoints or intersections)
+                if neighbor_count == 2 and transitions == 2:
+                    curvature = calculate_local_curvature(skeleton, y, x, window_size)
+                    if curvature >= curvature_threshold:
+                        corners[y, x] = 1
+    
+    return corners
+
+
+def detect_and_build_graph(binary_img, corner_curvature_threshold, corner_window_size, 
+                           max_jump, min_transitions, min_area):
+    """
+    Graph detection and construction with curvature-based corner detection
+    """
     H, W = binary_img.shape
     
+    # Step 1: Detect corners using curvature
+    corner_mask = detect_corners_curvature(
+        binary_img, 
+        window_size=corner_window_size,
+        curvature_threshold=corner_curvature_threshold
+    )
+    
+    # Step 2: Create feature map
     feature_map = np.zeros_like(binary_img)
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
-    # Detect feature points (intersections and endpoints only)
+    # Detect feature points (intersections, endpoints, and corners)
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
@@ -243,6 +356,9 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 elif transitions == 1:
                     is_feature = True
                     node_type = 2  # Endpoint
+                elif corner_mask[y, x] == 1:
+                    is_feature = True
+                    node_type = 4  # Corner
                 
                 if is_feature:
                     feature_map[y, x] = 1
@@ -251,7 +367,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     if feature_map.sum() == 0:
         return None, None, None
     
-    # Label and cluster existing feature pixels
+    # Step 3: Label and cluster feature pixels
     labeled_img = label(feature_map, connectivity=2)
     regions = regionprops(labeled_img)
     
@@ -271,8 +387,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         else:
             continue
         
-        # --- 改善されたノード統合ロジック ---
-        # 実際のノード領域のみをマッピング（拡張領域は後で処理）
+        # Map actual node region only
         for y, x in region.coords:
             coord_to_node_id[y, x] = node_id
         
@@ -281,7 +396,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             'pos': (int(center_x), int(center_y)), 
             'type': most_common_type, 
             'adj': [], 
-            'coords': list(region.coords)  # 実際のノード座標のみ
+            'coords': list(region.coords)
         }
         
         node_id_counter += 1
@@ -289,12 +404,13 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     if len(nodes) == 0:
         return None, None, None
     
+    # Step 4: Build edges
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
     edges = set()
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
-    # エッジ検索の開始点を列挙（ノード座標の直接隣接ピクセルから）
+    # Enumerate edge start points
     start_pixels = []
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']: 
@@ -304,31 +420,28 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1):
                     
-                    # 隣接ピクセルがどのノードに属するかチェック
                     neighbor_node_id = coord_to_node_id[neighbor_y, neighbor_x]
                     
-                    # 隣接ピクセルが別のノードに属する場合、直接接続
+                    # Direct connection between two nodes
                     if neighbor_node_id != -1 and neighbor_node_id != node_id:
-                        # 2つのノードが直接接触している場合
                         n1, n2 = min(node_id, neighbor_node_id), max(node_id, neighbor_node_id)
                         edge_key = (n1, n2)
                         
                         if edge_key not in edges:
                             edges.add(edge_key)
                             
-                            # エッジ長は1（直接接触）
                             if neighbor_node_id not in [adj[0] for adj in nodes[node_id]['adj']]:
                                 nodes[node_id]['adj'].append((neighbor_node_id, 1))
                             if node_id not in [adj[0] for adj in nodes[neighbor_node_id]['adj']]:
                                 nodes[neighbor_node_id]['adj'].append((node_id, 1))
                     
-                    # 隣接ピクセルがどのノードにも属さない場合、エッジ開始点候補
+                    # Edge start point candidate
                     elif neighbor_node_id == -1:
                         start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
     processed_starts = set()
     
-    # Edge search
+    # Edge search (simplified - no curvature splitting needed)
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
         start_key = (node_id, initial_y, initial_x)
         if start_key in processed_starts:
@@ -340,34 +453,19 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         temp_path_visited = set()
         y, x = initial_y, initial_x
         prev_dy, prev_dx = initial_y - start_y, initial_x - start_x
-        current_curvature = 0.0
         current_start_node_id = node_id
         
         while True:
-            # 現在位置が他のノードに属するかチェック
+            # Check if current position belongs to another node
             end_node_id_check = coord_to_node_id[y, x]
             is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
-            is_split_point = (current_curvature >= curvature_threshold) and (end_node_id_check == -1)
             
-            if is_end_node or is_split_point:
-                target_node_id = -1
-                if is_end_node:
-                    target_node_id = end_node_id_check
-                elif is_split_point:
-                    target_node_id = node_id_counter
-                    nodes[target_node_id] = {
-                        'pos': (x, y), 
-                        'type': 3, 
-                        'adj': [], 
-                        'coords': [(y, x)]
-                    }
-                    coord_to_node_id[y, x] = target_node_id
-                    node_id_counter += 1
-                
+            if is_end_node:
+                target_node_id = end_node_id_check
                 n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
                 edge_key = (n1, n2)
                 
-                if current_start_node_id == node_id or edge_key not in edges:
+                if edge_key not in edges:
                     edges.add(edge_key)
                     length = len(path)
                     
@@ -384,12 +482,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         marked_img[py, px] = (0, 255, 0)
                         edge_visited_map[py, px] = edge_id_counter
                 
-                if is_end_node:
-                    break
-                elif is_split_point:
-                    current_start_node_id = target_node_id
-                    current_curvature = 0.0
-                    path = []
+                break
             
             if edge_visited_map[y, x] != -1:
                 break
@@ -414,7 +507,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                          continue
                     
                     if binary_img[next_y, next_x] == 1:
-                        # ノードに到達した場合、優先的に選択
+                        # Prioritize reaching a node
                         if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
                             best_pixel = (next_y, next_x)
                             best_vector = (dy_search, dx_search)
@@ -452,9 +545,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     prev_dy, prev_dx = new_dy, new_dx
                     continue
                 
-                curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
-                current_curvature += curvature_change
-                
                 if max(abs(new_dy), abs(new_dx)) == 2:
                     mid_y, mid_x = y + new_dy//2, x + new_dx//2
                     path.append((mid_y, mid_x))
@@ -471,15 +561,15 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
-            color = (255, 0, 0)  # Intersection
+            color = (255, 0, 0)  # Intersection - Red
         elif data['type'] == 2:
-            color = (0, 255, 255)  # Endpoint
-        elif data['type'] == 3:
-            color = (0, 165, 255)  # Curvature split
+            color = (0, 255, 255)  # Endpoint - Yellow
+        elif data['type'] == 4:
+            color = (255, 0, 255)  # Corner - Magenta
         else:
-            color = (128, 128, 128)  # Other
+            color = (128, 128, 128)  # Other - Gray
         
-        radius = 5 if data['type'] != 3 else 3
+        radius = 5 if data['type'] != 4 else 4
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
     return nodes, edges, marked_img
@@ -583,7 +673,7 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     type_labels = {
         0: 'Intersection',
         2: 'Endpoint',
-        3: 'Intermediate (Curvature Split)'
+        4: 'Corner'
     }
     
     # Node CSV
@@ -705,11 +795,12 @@ if uploaded_file is not None:
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
             progress_bar.progress(50)
             
-            # Step 3: Graph construction
-            st.info("Step 3/4: Building graph...")
+            # Step 3: Graph construction with corner detection
+            st.info("Step 3/4: Building graph with corner detection...")
             nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
-                curvature_threshold,
+                corner_curvature_threshold,
+                corner_window_size,
                 max_jump_distance,
                 min_intersection_transitions,
                 min_node_area
@@ -719,6 +810,9 @@ if uploaded_file is not None:
             if nodes_data is None or edges_set is None:
                 st.error("❌ Graph detection failed. Please adjust parameters.")
             else:
+                # Count corner nodes
+                corner_count = sum(1 for node in nodes_data.values() if node['type'] == 4)
+                
                 # Step 4: Network integration (optional)
                 integration_info = None
                 if enable_integration:
@@ -731,7 +825,7 @@ if uploaded_file is not None:
                 
                 progress_bar.progress(100)
                 
-                st.success(f"✅ Processing complete! Nodes: {len(nodes_data)}, Edges: {len(edges_set)}")
+                st.success(f"✅ Processing complete! Nodes: {len(nodes_data)} (Corners: {corner_count}), Edges: {len(edges_set)}")
                 
                 # Display integration results
                 if integration_info:
@@ -814,7 +908,9 @@ if uploaded_file is not None:
                 
                 # Data preview
                 with st.expander("📊 Node Data Preview"):
-                    st.write(f"Total nodes: {len(node_data)}")
+                    st.write(f"Total nodes: {len(node_data)} (Intersections: {sum(1 for n in node_data if n[3] == 0)}, "
+                            f"Endpoints: {sum(1 for n in node_data if n[3] == 2)}, "
+                            f"Corners: {sum(1 for n in node_data if n[3] == 4)})")
                     df_nodes = pd.DataFrame(
                         node_data,
                         columns=['node_id', 'x_scratch', 'y_scratch', 'type_code', 'type_label']
@@ -853,11 +949,12 @@ else:
         
         1. **Upload Image**: Select an image file from the sidebar
         2. **Distance Scale Settings** (Optional): Enable real distance calculation and enter latitude/longitude range
-        3. **Network Integration** (Optional): Enable to automatically connect isolated network components
-        4. **Adjust Parameters**: Adjust various parameters in the sidebar
-        5. **Generate**: Click the "Generate Graph Data" button
-        6. **Review Results**: Check the generated graph and data
-        7. **Download**: Download CSV files and images
+        3. **Corner Detection**: Adjust curvature threshold to control corner detection sensitivity
+        4. **Network Integration** (Optional): Enable to automatically connect isolated network components
+        5. **Adjust Parameters**: Adjust various parameters in the sidebar
+        6. **Generate**: Click the "Generate Graph Data" button
+        7. **Review Results**: Check the generated graph and data
+        8. **Download**: Download CSV files and images
         
         ### Parameter Descriptions
         
@@ -867,16 +964,30 @@ else:
         - **West/East Longitude**: Left and right longitude of the image
         - **Image Size**: Width and height of the image after resizing (pixels)
         
+        #### Graph Construction
+        - **Corner detection curvature threshold**: Higher values = only sharp corners detected (15° recommended)
+        - **Corner detection window size**: Size of local window for curvature calculation (5 recommended)
+        - **Max jump distance**: Noise tolerance (2 recommended normally)
+        - **Intersection detection threshold**: Sensitivity of intersection detection
+        - **Minimum node area**: Remove small noise
+        
         #### Network Integration
         - **Integrate isolated networks**: Automatically connect disconnected network components
         - **Integration distance threshold**: Maximum distance (pixels) to bridge isolated components
         
-        #### Image Processing
-        - **Image Resize**: Resize to 480x360 for improved processing speed
-        - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
-        - **Max jump distance**: Noise tolerance (2 recommended normally)
-        - **Intersection detection threshold**: Sensitivity of intersection detection
-        - **Minimum node area**: Remove small noise
+        ### About Corner Detection
+        
+        The improved corner detection system:
+        - Analyzes local curvature at each skeleton point using surrounding geometry
+        - Detects corners during feature extraction (no need for edge-tracing curvature splitting)
+        - Provides more accurate and efficient corner identification
+        - Corners are marked in **magenta** on the graph image
+        
+        Benefits:
+        - Simpler processing pipeline
+        - Better computational efficiency
+        - More accurate corner placement
+        - Unified parameter control
         
         ### About Network Integration
         
@@ -885,17 +996,11 @@ else:
         - Adding connecting edges when the distance is within the threshold
         - Ensuring the final network is fully connected (one component)
         
-        This is useful when road network extraction produces fragmented results due to:
-        - Image boundaries cutting through roads
-        - Gaps in the original image
-        - Processing artifacts
-        
         ### About Distance Calculation
         
         - Distance scale is calculated horizontally and vertically from the image's latitude/longitude range
         - Edge real distance is calculated using the average scale value
         - Assumes Earth is a sphere and accounts for change in distance per degree of longitude by latitude
-        - For more accurate calculations, enter the latitude/longitude of the four corners of the image
         """)
     
     # Color legend
@@ -907,7 +1012,7 @@ else:
         with col_legend2:
             st.markdown("🟡 **Yellow**: Endpoint")
         with col_legend3:
-            st.markdown("🟠 **Orange**: Curvature split point")
+            st.markdown("🟣 **Magenta**: Corner")
 
 # Footer
 st.markdown("---")
