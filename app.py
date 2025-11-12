@@ -346,8 +346,9 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         while True:
             # 現在位置が他のノードに属するかチェック
             end_node_id_check = coord_to_node_id[y, x]
+            distance_from_start = len(path)  # 追加
             is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
-            is_split_point = (current_curvature >= curvature_threshold) and (end_node_id_check == -1)
+            is_split_point = (current_curvature >= curvature_threshold and end_node_id_check == -1 and distance_from_start > min_distance_from_node)  # 追加
             
             if is_end_node or is_split_point:
                 target_node_id = -1
