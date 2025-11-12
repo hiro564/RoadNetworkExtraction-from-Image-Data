@@ -64,7 +64,8 @@ curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
-min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 40, 20)
+min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 20, 10)
+path_smoothing = st.sidebar.slider("Path smoothing strength", 1, 9, 5, 2)
 
 # Network integration settings
 st.sidebar.subheader("🔗 Network Integration")
@@ -220,7 +221,37 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node):
+def smooth_path(path, window_size=3):
+    """
+    経路を平滑化する（移動平均を使用）
+    
+    Parameters:
+    - path: 経路の座標リスト [(y1, x1), (y2, x2), ...]
+    - window_size: 平滑化ウィンドウサイズ
+    
+    Returns:
+    - smoothed_path: 平滑化された経路
+    """
+    if len(path) < window_size:
+        return path
+    
+    smoothed = []
+    half_window = window_size // 2
+    
+    for i in range(len(path)):
+        start_idx = max(0, i - half_window)
+        end_idx = min(len(path), i + half_window + 1)
+        
+        window_points = path[start_idx:end_idx]
+        avg_y = sum(p[0] for p in window_points) / len(window_points)
+        avg_x = sum(p[1] for p in window_points) / len(window_points)
+        
+        smoothed.append((int(round(avg_y)), int(round(avg_x))))
+    
+    return smoothed
+
+
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node, smoothing_window):
     """Graph detection and construction (with improved logic for close intersections)"""
     H, W = binary_img.shape
     
@@ -384,7 +415,10 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                         nodes[target_node_id]['adj'].append((current_start_node_id, length))
                     
                     edge_id_counter += 1
-                    for py, px in path:
+                    
+                    # 経路を平滑化してから描画
+                    smoothed_path = smooth_path(path, window_size=smoothing_window)
+                    for py, px in smoothed_path:
                         marked_img[py, px] = (0, 255, 0)
                         edge_visited_map[py, px] = edge_id_counter
                 
@@ -717,7 +751,8 @@ if uploaded_file is not None:
                 max_jump_distance,
                 min_intersection_transitions,
                 min_node_area,
-                min_distance_from_node
+                min_distance_from_node,
+                path_smoothing
             )
             progress_bar.progress(75)
             
@@ -883,6 +918,7 @@ else:
         - **Intersection detection threshold**: Sensitivity of intersection detection
         - **Minimum node area**: Remove small noise
         - **Min distance from intersection**: Suppress curvature splits near intersections (prevents clustering of orange nodes)
+        - **Path smoothing strength**: Reduce jaggedness in edge visualization (larger = smoother, 1-9, default: 5)
         
         ### About Network Integration
         
