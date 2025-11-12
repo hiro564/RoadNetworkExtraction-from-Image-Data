@@ -60,14 +60,10 @@ resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
 
 # Graph construction settings
 st.sidebar.subheader("Graph Construction")
-curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 30.0, 10.0, 0.5)
+curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 10.0, 0.5)
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
-node_cluster_radius = st.sidebar.slider("Node clustering radius (pixels)", 1, 10, 3)
-
-# Debug mode
-st.sidebar.subheader("🐛 Debug")
-debug_mode = st.sidebar.checkbox("Enable debug mode", value=True)
+min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
 
 # Network integration settings
 st.sidebar.subheader("🔗 Network Integration")
@@ -223,85 +219,15 @@ def high_quality_skeletonization(img):
     return filtered_skeleton, processed_img
 
 
-def cluster_nearby_features(feature_pixels, cluster_radius=3):
-    """
-    Cluster nearby feature pixels using distance-based grouping
-    
-    Parameters:
-    - feature_pixels: Dictionary of (y, x) -> node_type
-    - cluster_radius: Maximum distance for pixels to be in same cluster
-    
-    Returns:
-    - clusters: List of cluster dictionaries with 'coords', 'type', 'center'
-    """
-    if not feature_pixels:
-        return []
-    
-    coords = list(feature_pixels.keys())
-    types = [feature_pixels[coord] for coord in coords]
-    
-    # Simple greedy clustering
-    visited = set()
-    clusters = []
-    
-    for i, (y, x) in enumerate(coords):
-        if (y, x) in visited:
-            continue
-        
-        # Start new cluster
-        cluster_coords = [(y, x)]
-        cluster_types = [types[i]]
-        visited.add((y, x))
-        
-        # Find nearby unvisited pixels
-        for j, (y2, x2) in enumerate(coords):
-            if (y2, x2) in visited:
-                continue
-            
-            # Check if close to any pixel in current cluster
-            for cy, cx in cluster_coords:
-                dist = np.sqrt((y2 - cy)**2 + (x2 - cx)**2)
-                if dist <= cluster_radius:
-                    cluster_coords.append((y2, x2))
-                    cluster_types.append(types[j])
-                    visited.add((y2, x2))
-                    break
-        
-        # Determine cluster type (most common)
-        most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
-        
-        # Calculate center
-        center_y = sum(c[0] for c in cluster_coords) / len(cluster_coords)
-        center_x = sum(c[1] for c in cluster_coords) / len(cluster_coords)
-        
-        clusters.append({
-            'coords': cluster_coords,
-            'type': most_common_type,
-            'center': (center_y, center_x)
-        })
-    
-    return clusters
-
-
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, cluster_radius, debug=False):
-    """Graph detection and construction (with improved clustering)"""
+def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area):
+    """Graph detection and construction (with improved logic for close intersections)"""
     H, W = binary_img.shape
     
+    feature_map = np.zeros_like(binary_img)
     neighbors_coord = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
     feature_pixels = {}
     
-    # Debug counters
-    debug_info = {
-        'total_skeleton_pixels': int(binary_img.sum()),
-        'intersections_found': 0,
-        'corners_found': 0,
-        'endpoints_found': 0,
-        'feature_pixels_before_clustering': 0,
-        'clusters_found': 0,
-        'nodes_created': 0
-    }
-    
-    # Detect feature points (intersections, corners, and endpoints)
+    # Detect feature points (intersections and endpoints only)
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
@@ -314,71 +240,61 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 if transitions >= min_transitions:
                     is_feature = True
                     node_type = 0  # Intersection
-                    debug_info['intersections_found'] += 1
-                elif transitions == 2:
-                    is_feature = True
-                    node_type = 1  # Corner
-                    debug_info['corners_found'] += 1
                 elif transitions == 1:
                     is_feature = True
                     node_type = 2  # Endpoint
-                    debug_info['endpoints_found'] += 1
                 
                 if is_feature:
+                    feature_map[y, x] = 1
                     feature_pixels[(y, x)] = node_type
     
-    debug_info['feature_pixels_before_clustering'] = len(feature_pixels)
+    if feature_map.sum() == 0:
+        return None, None, None
     
-    if not feature_pixels:
-        if debug:
-            st.warning(f"⚠️ No feature points detected! Debug info: {debug_info}")
-        return None, None, None, debug_info
+    # Label and cluster existing feature pixels
+    labeled_img = label(feature_map, connectivity=2)
+    regions = regionprops(labeled_img)
     
-    # Cluster nearby feature pixels
-    clusters = cluster_nearby_features(feature_pixels, cluster_radius)
-    debug_info['clusters_found'] = len(clusters)
-    
-    if not clusters:
-        if debug:
-            st.warning(f"⚠️ No clusters created! Debug info: {debug_info}")
-        return None, None, None, debug_info
-    
-    # Create nodes from clusters
     nodes = {}
     coord_to_node_id = np.full((H, W), -1, dtype=int)
     node_id_counter = 1
     
-    for cluster in clusters:
+    for region in regions:
+        if region.area < min_area:
+            continue
         node_id = node_id_counter
-        center_y, center_x = cluster['center']
+        center_y, center_x = region.centroid
         
-        # Map cluster coordinates to this node
-        for y, x in cluster['coords']:
+        cluster_types = [feature_pixels[(py, px)] for py, px in region.coords if (py, px) in feature_pixels]
+        if cluster_types:
+            most_common_type = collections.Counter(cluster_types).most_common(1)[0][0]
+        else:
+            continue
+        
+        # --- 改善されたノード統合ロジック ---
+        # 実際のノード領域のみをマッピング（拡張領域は後で処理）
+        for y, x in region.coords:
             coord_to_node_id[y, x] = node_id
         
         # Create node data
         nodes[node_id] = {
             'pos': (int(center_x), int(center_y)), 
-            'type': cluster['type'], 
+            'type': most_common_type, 
             'adj': [], 
-            'coords': cluster['coords']
+            'coords': list(region.coords)  # 実際のノード座標のみ
         }
         
         node_id_counter += 1
     
-    debug_info['nodes_created'] = len(nodes)
-    
     if len(nodes) == 0:
-        if debug:
-            st.warning(f"⚠️ No nodes created! Debug info: {debug_info}")
-        return None, None, None, debug_info
+        return None, None, None
     
     marked_img = cv2.cvtColor(binary_img * 255, cv2.COLOR_GRAY2BGR)
     edges = set()
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
     
-    # Enumerate edge search starting points
+    # エッジ検索の開始点を列挙（ノード座標の直接隣接ピクセルから）
     start_pixels = []
     for node_id, node_data in nodes.items():
         for start_y, start_x in node_data['coords']: 
@@ -388,23 +304,25 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                 if (0 <= neighbor_y < H and 0 <= neighbor_x < W and 
                     binary_img[neighbor_y, neighbor_x] == 1):
                     
+                    # 隣接ピクセルがどのノードに属するかチェック
                     neighbor_node_id = coord_to_node_id[neighbor_y, neighbor_x]
                     
-                    # If adjacent pixel belongs to another node, connect directly
+                    # 隣接ピクセルが別のノードに属する場合、直接接続
                     if neighbor_node_id != -1 and neighbor_node_id != node_id:
+                        # 2つのノードが直接接触している場合
                         n1, n2 = min(node_id, neighbor_node_id), max(node_id, neighbor_node_id)
                         edge_key = (n1, n2)
                         
                         if edge_key not in edges:
                             edges.add(edge_key)
                             
-                            # Edge length is 1 (direct contact)
+                            # エッジ長は1（直接接触）
                             if neighbor_node_id not in [adj[0] for adj in nodes[node_id]['adj']]:
                                 nodes[node_id]['adj'].append((neighbor_node_id, 1))
                             if node_id not in [adj[0] for adj in nodes[neighbor_node_id]['adj']]:
                                 nodes[neighbor_node_id]['adj'].append((node_id, 1))
                     
-                    # If adjacent pixel doesn't belong to any node, it's an edge starting point candidate
+                    # 隣接ピクセルがどのノードにも属さない場合、エッジ開始点候補
                     elif neighbor_node_id == -1:
                         start_pixels.append((node_id, start_y, start_x, neighbor_y, neighbor_x))
     
@@ -426,7 +344,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         current_start_node_id = node_id
         
         while True:
-            # Check if current position belongs to another node
+            # 現在位置が他のノードに属するかチェック
             end_node_id_check = coord_to_node_id[y, x]
             is_end_node = (end_node_id_check != -1 and end_node_id_check != current_start_node_id)
             is_split_point = (current_curvature >= curvature_threshold) and (end_node_id_check == -1)
@@ -496,7 +414,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                          continue
                     
                     if binary_img[next_y, next_x] == 1:
-                        # If reached a node, select it preferentially
+                        # ノードに到達した場合、優先的に選択
                         if coord_to_node_id[next_y, next_x] != -1 and coord_to_node_id[next_y, next_x] != current_start_node_id:
                             best_pixel = (next_y, next_x)
                             best_vector = (dy_search, dx_search)
@@ -553,20 +471,18 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
-            color = (255, 0, 0)  # Intersection: Red
-        elif data['type'] == 1:
-            color = (255, 0, 255)  # Corner: Magenta
+            color = (255, 0, 0)  # Intersection
         elif data['type'] == 2:
-            color = (0, 255, 255)  # Endpoint: Yellow
+            color = (0, 255, 255)  # Endpoint
         elif data['type'] == 3:
-            color = (0, 165, 255)  # Curvature split: Orange
+            color = (0, 165, 255)  # Curvature split
         else:
-            color = (128, 128, 128)  # Other: Gray
+            color = (128, 128, 128)  # Other
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
-    return nodes, edges, marked_img, debug_info
+    return nodes, edges, marked_img
 
 
 def integrate_isolated_networks(nodes, edges, distance_threshold=30):
@@ -666,7 +582,6 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
     """Create CSV data (output as bidirectional edges)"""
     type_labels = {
         0: 'Intersection',
-        1: 'Corner',
         2: 'Endpoint',
         3: 'Intermediate (Curvature Split)'
     }
@@ -792,41 +707,17 @@ if uploaded_file is not None:
             
             # Step 3: Graph construction
             st.info("Step 3/4: Building graph...")
-            nodes_data, edges_set, marked_img, debug_info = detect_and_build_graph(
+            nodes_data, edges_set, marked_img = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
                 max_jump_distance,
                 min_intersection_transitions,
-                node_cluster_radius,
-                debug=debug_mode
+                min_node_area
             )
             progress_bar.progress(75)
             
-            # Display debug info
-            if debug_mode and debug_info:
-                with st.expander("🐛 Debug Information", expanded=True):
-                    col_d1, col_d2, col_d3 = st.columns(3)
-                    with col_d1:
-                        st.metric("Skeleton Pixels", debug_info['total_skeleton_pixels'])
-                        st.metric("Intersections", debug_info['intersections_found'])
-                    with col_d2:
-                        st.metric("Corners", debug_info['corners_found'])
-                        st.metric("Endpoints", debug_info['endpoints_found'])
-                    with col_d3:
-                        st.metric("Feature Pixels", debug_info['feature_pixels_before_clustering'])
-                        st.metric("Clusters Found", debug_info['clusters_found'])
-                    st.metric("Nodes Created", debug_info['nodes_created'])
-            
             if nodes_data is None or edges_set is None:
                 st.error("❌ Graph detection failed. Please adjust parameters.")
-                if debug_mode and debug_info:
-                    st.info("💡 **Suggestions:**")
-                    if debug_info['total_skeleton_pixels'] == 0:
-                        st.write("- No skeleton pixels found. The image might be too light or preprocessing failed.")
-                    elif debug_info['feature_pixels_before_clustering'] == 0:
-                        st.write("- No feature points detected. Try lowering 'Intersection detection threshold' to 2.")
-                    elif debug_info['clusters_found'] == 0:
-                        st.write("- No clusters created. Try increasing 'Node clustering radius'.")
             else:
                 # Step 4: Network integration (optional)
                 integration_info = None
@@ -964,10 +855,9 @@ else:
         2. **Distance Scale Settings** (Optional): Enable real distance calculation and enter latitude/longitude range
         3. **Network Integration** (Optional): Enable to automatically connect isolated network components
         4. **Adjust Parameters**: Adjust various parameters in the sidebar
-        5. **Enable Debug Mode**: Check debug mode to see detailed processing information
-        6. **Generate**: Click the "Generate Graph Data" button
-        7. **Review Results**: Check the generated graph and data
-        8. **Download**: Download CSV files and images
+        5. **Generate**: Click the "Generate Graph Data" button
+        6. **Review Results**: Check the generated graph and data
+        7. **Download**: Download CSV files and images
         
         ### Parameter Descriptions
         
@@ -983,48 +873,41 @@ else:
         
         #### Image Processing
         - **Image Resize**: Resize to 480x360 for improved processing speed
-        - **Curvature split threshold**: Larger values make it easier to recognize as straight lines (1-30)
+        - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
         - **Max jump distance**: Noise tolerance (2 recommended normally)
-        - **Intersection detection threshold**: Sensitivity of intersection detection (2 will also detect corners)
-        - **Node clustering radius**: Distance (pixels) to group nearby feature points into single nodes (3-5 recommended)
+        - **Intersection detection threshold**: Sensitivity of intersection detection
+        - **Minimum node area**: Remove small noise
         
-        #### Debug Mode
-        - **Enable debug mode**: Shows detailed statistics about detection process
-        - Helps identify why nodes aren't being detected
-        - Displays counts of intersections, corners, endpoints, clusters, and nodes created
+        ### About Network Integration
         
-        ### Node Types
+        The network integration feature automatically connects isolated network components by:
+        - Finding the closest node pairs between isolated components and the main network
+        - Adding connecting edges when the distance is within the threshold
+        - Ensuring the final network is fully connected (one component)
         
-        The system automatically detects four types of nodes:
-        - **Intersection** (Red): Points where 3+ paths meet
-        - **Corner** (Magenta): Points where exactly 2 paths meet at an angle
-        - **Endpoint** (Yellow): Terminal points where paths end
-        - **Curvature Split** (Orange): Points added to split curved paths
+        This is useful when road network extraction produces fragmented results due to:
+        - Image boundaries cutting through roads
+        - Gaps in the original image
+        - Processing artifacts
         
-        ### Troubleshooting
+        ### About Distance Calculation
         
-        If too few nodes are detected:
-        1. Enable debug mode to see clustering results
-        2. Increase "Node clustering radius" to merge nearby features (try 5-7)
-        3. Lower "Intersection detection threshold" to 2 to detect corners
-        
-        If too many nodes are detected:
-        1. Decrease "Node clustering radius" to separate features (try 2-3)
-        2. Increase minimum thresholds
+        - Distance scale is calculated horizontally and vertically from the image's latitude/longitude range
+        - Edge real distance is calculated using the average scale value
+        - Assumes Earth is a sphere and accounts for change in distance per degree of longitude by latitude
+        - For more accurate calculations, enter the latitude/longitude of the four corners of the image
         """)
     
     # Color legend
     with st.expander("🎨 Node Color Meanings"):
-        col_legend1, col_legend2, col_legend3, col_legend4 = st.columns(4)
+        col_legend1, col_legend2, col_legend3 = st.columns(3)
         
         with col_legend1:
             st.markdown("🔴 **Red**: Intersection")
         with col_legend2:
-            st.markdown("🟣 **Magenta**: Corner")
-        with col_legend3:
             st.markdown("🟡 **Yellow**: Endpoint")
-        with col_legend4:
-            st.markdown("🟠 **Orange**: Curvature split")
+        with col_legend3:
+            st.markdown("🟠 **Orange**: Curvature split point")
 
 # Footer
 st.markdown("---")
