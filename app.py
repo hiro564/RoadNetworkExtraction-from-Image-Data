@@ -58,13 +58,19 @@ if enable_distance_scale:
 st.sidebar.subheader("Image Processing")
 resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
 
+# Skeletonization settings
+st.sidebar.subheader("Skeletonization")
+gaussian_blur_size = st.sidebar.slider("Gaussian blur kernel size", 3, 9, 5, 2)
+dilation_iterations = st.sidebar.slider("Dilation iterations", 1, 3, 2)
+min_component_size = st.sidebar.slider("Min component size", 5, 20, 10)
+
 # Graph construction settings
 st.sidebar.subheader("Graph Construction")
 curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 10.0, 0.5)
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
-min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 40, 20)
+min_distance_from_node = st.sidebar.slider("Min distance from intersection", 5, 20, 10)
 
 # Network integration settings
 st.sidebar.subheader("🔗 Network Integration")
@@ -172,14 +178,15 @@ def refine_skeleton_branches(skeleton):
     return refined
 
 
-def high_quality_skeletonization(img):
-    """High-quality skeletonization"""
+def high_quality_skeletonization(img, blur_size=5, dilate_iter=2, min_comp_size=10):
+    """High-quality skeletonization with smoothing"""
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img.copy()
     
-    denoised = cv2.GaussianBlur(gray, (3, 3), 0)
+    # より強力なノイズ除去（パラメータ化）
+    denoised = cv2.GaussianBlur(gray, (blur_size, blur_size), 1.0)
     
     # Use adaptive thresholding to extract lines even with non-uniform background
     binary = cv2.adaptiveThreshold(
@@ -190,25 +197,39 @@ def high_quality_skeletonization(img):
         C=2
     )
     
-    kernel_small = np.ones((2, 2), np.uint8)
+    # より強力なノイズ除去
+    kernel_small = np.ones((3, 3), np.uint8)
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small)
     
-    kernel_dilate = np.ones((3, 3), np.uint8)
-    dilated = cv2.dilate(cleaned, kernel_dilate, iterations=1)
+    # クロージング処理で小さなギャップを埋める
+    kernel_close = np.ones((3, 3), np.uint8)
+    closed = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+    
+    # 膨張処理（線を太くして滑らかに）- パラメータ化
+    kernel_dilate = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(closed, kernel_dilate, iterations=dilate_iter)
+    
+    # さらにガウシアンブラーで滑らかに
+    dilated = cv2.GaussianBlur(dilated, (blur_size, blur_size), 1.0)
     
     binary_bool = (dilated > 128).astype(bool)
+    
     # Skeletonization
     skeleton_bool = skeletonize(binary_bool)
     skeleton = skeleton_bool.astype(np.uint8)
     
-    # Remove components that are too small
+    # スケルトンの後処理：細かいノイズを除去
+    kernel_smooth = np.ones((3, 3), np.uint8)
+    skeleton = cv2.morphologyEx(skeleton, cv2.MORPH_CLOSE, kernel_smooth, iterations=1)
+    skeleton = (skeleton > 0).astype(np.uint8)
+    
+    # Remove components that are too small - パラメータ化
     labeled_skeleton = label(skeleton, connectivity=2)
     regions = regionprops(labeled_skeleton)
     
-    min_component_size = 5
     filtered_skeleton = np.zeros_like(skeleton)
     for region in regions:
-        if region.area >= min_component_size:
+        if region.area >= min_comp_size:
             for coord in region.coords:
                 filtered_skeleton[coord[0], coord[1]] = 1
     
@@ -706,7 +727,12 @@ if uploaded_file is not None:
             
             # Step 2: Skeletonization
             st.info("Step 2/4: Skeletonizing...")
-            skeleton_data, skeleton_visual = high_quality_skeletonization(img)
+            skeleton_data, skeleton_visual = high_quality_skeletonization(
+                img, 
+                gaussian_blur_size, 
+                dilation_iterations, 
+                min_component_size
+            )
             progress_bar.progress(50)
             
             # Step 3: Graph construction
@@ -878,6 +904,13 @@ else:
         
         #### Image Processing
         - **Image Resize**: Resize to 480x360 for improved processing speed
+        
+        #### Skeletonization
+        - **Gaussian blur kernel size**: Smoothing strength before skeletonization (larger = smoother, 3-9, default: 5)
+        - **Dilation iterations**: Line thickening before skeletonization (more = smoother but thicker, 1-3, default: 2)
+        - **Min component size**: Remove small isolated components (larger = cleaner, 5-20, default: 10)
+        
+        #### Graph Construction
         - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
         - **Max jump distance**: Noise tolerance (2 recommended normally)
         - **Intersection detection threshold**: Sensitivity of intersection detection
