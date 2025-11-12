@@ -15,14 +15,14 @@ import pandas as pd
 
 # Page configuration
 st.set_page_config(
-    page_title="Image Graph Generation App",
+    page_title="Image Graph Generation App (Enhanced)",
     page_icon="📊",
     layout="wide"
 )
 
 # Title
-st.title("📊 Generate Graph Data from Image")
-st.markdown("Upload an image to perform skeletonization and graph construction, generating CSV data.")
+st.title("📊 Generate Graph Data from Image (Enhanced Version)")
+st.markdown("Upload an image to perform skeletonization and graph construction with improved curvature detection.")
 
 # Sidebar parameter settings
 st.sidebar.header("⚙️ Settings")
@@ -60,7 +60,26 @@ resize_enabled = st.sidebar.checkbox("Resize image to 480x360", value=True)
 
 # Graph construction settings
 st.sidebar.subheader("Graph Construction")
-curvature_threshold = st.sidebar.slider("Curvature split threshold", 1.0, 20.0, 10.0, 0.5)
+
+# Curvature detection settings
+st.sidebar.markdown("**🔄 Curvature Detection (Enhanced)**")
+curvature_threshold = st.sidebar.slider(
+    "Cumulative curvature threshold", 
+    1.0, 20.0, 10.0, 0.5,
+    help="Detects gradual curves by accumulating curvature changes"
+)
+instant_curvature_threshold = st.sidebar.slider(
+    "Sharp turn threshold (instant)", 
+    2.0, 5.0, 3.0, 0.5,
+    help="Immediately detects sharp turns (e.g., 90-degree corners)"
+)
+min_sharp_turn_distance = st.sidebar.slider(
+    "Min distance for sharp turn detection", 
+    3, 15, 5, 1,
+    help="Minimum path length before detecting sharp turns (prevents noise)"
+)
+
+# Other settings
 max_jump_distance = st.sidebar.slider("Max jump distance", 1, 5, 2)
 min_intersection_transitions = st.sidebar.slider("Intersection detection threshold", 2, 5, 3)
 min_node_area = st.sidebar.slider("Minimum node area", 1, 10, 1)
@@ -252,8 +271,16 @@ def smooth_path(path, window_size=3):
     return smoothed
 
 
-def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transitions, min_area, min_distance_from_node, smoothing_window, edge_margin):
-    """Graph detection and construction (with improved logic for close intersections)"""
+def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_threshold, 
+                           min_sharp_distance, max_jump, min_transitions, min_area, 
+                           min_distance_from_node, smoothing_window, edge_margin):
+    """
+    Graph detection and construction with enhanced curvature detection
+    
+    New parameters:
+    - instant_curve_threshold: Threshold for instant sharp turn detection
+    - min_sharp_distance: Minimum distance before detecting sharp turns
+    """
     H, W = binary_img.shape
     
     feature_map = np.zeros_like(binary_img)
@@ -261,8 +288,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     feature_pixels = {}
     
     # Detect feature points (intersections and endpoints only)
-    # edge_margin: 画像の端からこのピクセル数以内の端点は無視
-    
     for y in range(1, H - 1):
         for x in range(1, W - 1):
             if binary_img[y, x] == 1:
@@ -276,10 +301,9 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     is_feature = True
                     node_type = 0  # Intersection
                 elif transitions == 1:
-                    # 端点の場合、画像の端にあるかチェック
+                    # Check if endpoint is at image edge
                     if (x < edge_margin or x >= W - edge_margin or 
                         y < edge_margin or y >= H - edge_margin):
-                        # 画像の端にある端点は無視
                         continue
                     is_feature = True
                     node_type = 2  # Endpoint
@@ -320,7 +344,8 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             'pos': (int(center_x), int(center_y)), 
             'type': most_common_type, 
             'adj': [], 
-            'coords': list(region.coords)
+            'coords': list(region.coords),
+            'split_type': None  # Track what caused the split
         }
         
         node_id_counter += 1
@@ -332,6 +357,10 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     edges = set()
     edge_visited_map = np.full((H, W), -1, dtype=int)
     edge_id_counter = 0
+    
+    # Statistics tracking
+    cumulative_splits = 0
+    sharp_turn_splits = 0
     
     # Enumerate edge search starting points
     start_pixels = []
@@ -364,7 +393,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     
     processed_starts = set()
     
-    # Edge search
+    # Edge search with enhanced curvature detection
     for node_id, start_y, start_x, initial_y, initial_x in start_pixels:
         start_key = (node_id, initial_y, initial_x)
         if start_key in processed_starts:
@@ -386,23 +415,55 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
             
             # Calculate distance from start for split suppression
             distance_from_start = len(path)
-            is_split_point = (
+            
+            # Enhanced curvature detection: Check both cumulative and instant
+            is_cumulative_split = (
                 current_curvature >= curvature_threshold 
-                and end_node_id_check == -1
                 and distance_from_start > min_distance_from_node
+            )
+            
+            is_sharp_turn_split = (
+                distance_from_start > 0  # Need at least one step to calculate curvature_change
+                and distance_from_start > min_sharp_distance
+                and distance_from_start > min_distance_from_node
+            )
+            
+            # Calculate instant curvature change if we have previous direction
+            instant_curvature = 0.0
+            if len(path) > 0:
+                # This will be calculated after finding next pixel
+                pass
+            
+            is_split_point = (
+                (is_cumulative_split or (is_sharp_turn_split and instant_curvature >= instant_curve_threshold))
+                and end_node_id_check == -1
             )
             
             if is_end_node or is_split_point:
                 target_node_id = -1
+                split_reason = None
+                
                 if is_end_node:
                     target_node_id = end_node_id_check
                 elif is_split_point:
                     target_node_id = node_id_counter
+                    
+                    # Determine split reason
+                    if is_cumulative_split and instant_curvature >= instant_curve_threshold:
+                        split_reason = 'both'
+                    elif is_cumulative_split:
+                        split_reason = 'cumulative'
+                        cumulative_splits += 1
+                    else:
+                        split_reason = 'sharp_turn'
+                        sharp_turn_splits += 1
+                    
                     nodes[target_node_id] = {
                         'pos': (x, y), 
                         'type': 3, 
                         'adj': [], 
-                        'coords': [(y, x)]
+                        'coords': [(y, x)],
+                        'split_type': split_reason
                     }
                     coord_to_node_id[y, x] = target_node_id
                     node_id_counter += 1
@@ -424,7 +485,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     
                     edge_id_counter += 1
                     
-                    # 経路を平滑化してから描画
+                    # Smooth and draw path
                     smoothed_path = smooth_path(path, window_size=smoothing_window)
                     for py, px in smoothed_path:
                         marked_img[py, px] = (0, 255, 0)
@@ -498,8 +559,57 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
                     prev_dy, prev_dx = new_dy, new_dx
                     continue
                 
+                # Calculate instant curvature change
                 curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
+                instant_curvature = curvature_change
                 current_curvature += curvature_change
+                
+                # Re-check sharp turn condition with calculated instant curvature
+                if (distance_from_start > min_sharp_distance and 
+                    distance_from_start > min_distance_from_node and
+                    instant_curvature >= instant_curve_threshold and
+                    end_node_id_check == -1):
+                    
+                    # Create sharp turn split node
+                    target_node_id = node_id_counter
+                    sharp_turn_splits += 1
+                    
+                    nodes[target_node_id] = {
+                        'pos': (x, y), 
+                        'type': 3, 
+                        'adj': [], 
+                        'coords': [(y, x)],
+                        'split_type': 'sharp_turn'
+                    }
+                    coord_to_node_id[y, x] = target_node_id
+                    node_id_counter += 1
+                    
+                    n1, n2 = min(current_start_node_id, target_node_id), max(current_start_node_id, target_node_id)
+                    edge_key = (n1, n2)
+                    
+                    if edge_key not in edges:
+                        edges.add(edge_key)
+                        length = len(path)
+                        
+                        existing_adj = [adj[0] for adj in nodes[current_start_node_id]['adj']]
+                        if target_node_id not in existing_adj:
+                            nodes[current_start_node_id]['adj'].append((target_node_id, length))
+
+                        existing_adj = [adj[0] for adj in nodes[target_node_id]['adj']]
+                        if current_start_node_id not in existing_adj:
+                            nodes[target_node_id]['adj'].append((current_start_node_id, length))
+                        
+                        edge_id_counter += 1
+                        
+                        smoothed_path = smooth_path(path, window_size=smoothing_window)
+                        for py, px in smoothed_path:
+                            marked_img[py, px] = (0, 255, 0)
+                            edge_visited_map[py, px] = edge_id_counter
+                    
+                    # Reset for new segment
+                    current_start_node_id = target_node_id
+                    current_curvature = 0.0
+                    path = []
                 
                 if max(abs(new_dy), abs(new_dx)) == 2:
                     mid_y, mid_x = y + new_dy//2, x + new_dx//2
@@ -513,7 +623,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         
         processed_starts.add((node_id, initial_y, initial_x))
     
-    # Draw nodes
+    # Draw nodes with different colors based on split type
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
@@ -523,12 +633,25 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
         elif data['type'] == 2:
             color = (0, 255, 255)  # Endpoint - Yellow
         elif data['type'] == 3:
-            color = (0, 165, 255)  # Curvature split - Orange
+            # Different colors for different split types
+            if data.get('split_type') == 'sharp_turn':
+                color = (255, 0, 255)  # Sharp turn - Magenta
+            elif data.get('split_type') == 'cumulative':
+                color = (0, 165, 255)  # Cumulative - Orange
+            else:
+                color = (128, 0, 128)  # Both - Purple
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
-    return nodes, edges, marked_img
+    # Store statistics in a way that can be returned
+    stats = {
+        'cumulative_splits': cumulative_splits,
+        'sharp_turn_splits': sharp_turn_splits,
+        'total_splits': cumulative_splits + sharp_turn_splits
+    }
+    
+    return nodes, edges, marked_img, stats
 
 
 def integrate_isolated_networks(nodes, edges, distance_threshold=30):
@@ -642,12 +765,23 @@ def create_csv_data(nodes, edges, image_height, meters_per_pixel=None):
         x_scratch = int(round(x_pixel - 240))  # For 480 width
         y_scratch = int(round(image_height / 2 - y_pixel))
         
+        # Add split type info for intermediate nodes
+        type_label = type_labels.get(node_type, 'Unknown')
+        if node_type == 3 and 'split_type' in data and data['split_type']:
+            split_type = data['split_type']
+            if split_type == 'sharp_turn':
+                type_label += ' [Sharp Turn]'
+            elif split_type == 'cumulative':
+                type_label += ' [Cumulative]'
+            elif split_type == 'both':
+                type_label += ' [Both]'
+        
         node_data.append([
             node_id,
             x_scratch,
             y_scratch,
             node_type,
-            type_labels.get(node_type, 'Unknown')
+            type_label
         ])
     
     # Edge CSV (output as bidirectional)
@@ -751,11 +885,13 @@ if uploaded_file is not None:
             skeleton_data, skeleton_visual = high_quality_skeletonization(img)
             progress_bar.progress(50)
             
-            # Step 3: Graph construction
-            st.info("Step 3/4: Building graph...")
-            nodes_data, edges_set, marked_img = detect_and_build_graph(
+            # Step 3: Graph construction with enhanced detection
+            st.info("Step 3/4: Building graph with enhanced curvature detection...")
+            result = detect_and_build_graph(
                 skeleton_data,
                 curvature_threshold,
+                instant_curvature_threshold,
+                min_sharp_turn_distance,
                 max_jump_distance,
                 min_intersection_transitions,
                 min_node_area,
@@ -763,6 +899,15 @@ if uploaded_file is not None:
                 path_smoothing,
                 edge_margin
             )
+            
+            if result[0] is None:
+                nodes_data = None
+                edges_set = None
+                marked_img = None
+                split_stats = None
+            else:
+                nodes_data, edges_set, marked_img, split_stats = result
+            
             progress_bar.progress(75)
             
             if nodes_data is None or edges_set is None:
@@ -781,6 +926,13 @@ if uploaded_file is not None:
                 progress_bar.progress(100)
                 
                 st.success(f"✅ Processing complete! Nodes: {len(nodes_data)}, Edges: {len(edges_set)}")
+                
+                # Display split statistics
+                if split_stats:
+                    st.info(f"🔄 **Curvature Detection Statistics**\n\n"
+                           f"- Cumulative curve splits: {split_stats['cumulative_splits']}\n"
+                           f"- Sharp turn splits: {split_stats['sharp_turn_splits']}\n"
+                           f"- Total splits: {split_stats['total_splits']}")
                 
                 # Display integration results
                 if integration_info:
@@ -896,78 +1048,88 @@ else:
     st.info("👆 Please select an image from the file uploader on the left")
     
     # Usage instructions
-    with st.expander("📖 How to Use"):
+    with st.expander("📖 How to Use (Enhanced Version)"):
         st.markdown("""
+        ### What's New in Enhanced Version
+        
+        **🔄 Dual Curvature Detection System:**
+        - **Cumulative detection**: Tracks gradual curves over distance
+        - **Sharp turn detection**: Immediately detects acute angles (e.g., 90° turns)
+        - **Combined approach**: Best of both worlds for accurate segmentation
+        
         ### How to Use
         
         1. **Upload Image**: Select an image file from the sidebar
-        2. **Distance Scale Settings** (Optional): Enable real distance calculation and enter latitude/longitude range
-        3. **Network Integration** (Optional): Enable to automatically connect isolated network components
-        4. **Adjust Parameters**: Adjust various parameters in the sidebar
+        2. **Distance Scale Settings** (Optional): Enable real distance calculation
+        3. **Network Integration** (Optional): Auto-connect isolated components
+        4. **Adjust Curvature Parameters**:
+           - **Cumulative threshold**: For gradual curves (default: 10.0)
+           - **Sharp turn threshold**: For immediate detection (default: 3.0)
+           - **Min sharp turn distance**: Noise prevention (default: 5)
         5. **Generate**: Click the "Generate Graph Data" button
-        6. **Review Results**: Check the generated graph and data
-        7. **Download**: Download CSV files and images
+        6. **Review Results**: Check statistics and graph visualization
+        7. **Download**: Get CSV files and images
         
-        ### Parameter Descriptions
+        ### Enhanced Curvature Detection
         
-        #### Distance Scale Settings
-        - **Enable real distance calculation**: Convert pixel length to real distance (meters)
-        - **North/South Latitude**: Top and bottom latitude of the image
-        - **West/East Longitude**: Left and right longitude of the image
-        - **Image Size**: Width and height of the image after resizing (pixels)
+        #### Cumulative Curvature (Orange nodes)
+        - Accumulates direction changes over the path
+        - Detects: S-curves, gentle bends, long gradual turns
+        - Example: `→ →↗ → →↗ → →↗` (total rotation = 45°)
         
-        #### Network Integration
-        - **Integrate isolated networks**: Automatically connect disconnected network components
-        - **Integration distance threshold**: Maximum distance (pixels) to bridge isolated components
+        #### Sharp Turn Detection (Magenta nodes)
+        - Checks instant angle change at each step
+        - Detects: Right angles, hairpin turns, sudden direction changes
+        - Example: `→ → ↑` (immediate 90° turn)
         
-        #### Image Processing
-        - **Image Resize**: Resize to 480x360 for improved processing speed
-        - **Curvature split threshold**: Larger values make it easier to recognize as straight lines
-        - **Max jump distance**: Noise tolerance (2 recommended normally)
-        - **Intersection detection threshold**: Sensitivity of intersection detection
-        - **Minimum node area**: Remove small noise
-        - **Min distance from intersection**: Suppress curvature splits near intersections (prevents clustering of orange nodes)
-        - **Path smoothing strength**: Reduce jaggedness in edge visualization (larger = smoother, 1-9, default: 5)
-        - **Ignore edge endpoints**: Ignore endpoints within this many pixels from image border (0-20, default: 5)
+        #### Combined Detection (Purple nodes)
+        - When both conditions are met simultaneously
+        - Represents: Complex curves with sharp corners
         
-        ### About Network Integration
+        ### Node Color Legend
         
-        The network integration feature automatically connects isolated network components by:
-        - Finding the closest node pairs between isolated components and the main network
-        - Adding connecting edges when the distance is within the threshold
-        - Ensuring the final network is fully connected (one component)
+        - 🔴 **Red**: Intersection (3+ roads meet)
+        - 🟡 **Yellow**: Endpoint (road terminus)
+        - 🟠 **Orange**: Cumulative curve split
+        - 💗 **Magenta**: Sharp turn split
+        - 💜 **Purple**: Both cumulative and sharp turn
         
-        This is useful when road network extraction produces fragmented results due to:
-        - Image boundaries cutting through roads
-        - Gaps in the original image
-        - Processing artifacts
+        ### Parameter Tuning Tips
+        
+        **For road networks with:**
+        - **Many gradual curves**: Increase cumulative threshold (15-20)
+        - **Many sharp corners**: Decrease sharp turn threshold (2.5-3.0)
+        - **Noisy images**: Increase min sharp turn distance (8-12)
+        - **Clean images**: Decrease min sharp turn distance (3-5)
         
         ### About Distance Calculation
         
-        - Distance scale is calculated horizontally and vertically from the image's latitude/longitude range
-        - Edge real distance is calculated using the average scale value
-        - Assumes Earth is a sphere and accounts for change in distance per degree of longitude by latitude
-        - For more accurate calculations, enter the latitude/longitude of the four corners of the image
+        - Distance scale uses latitude/longitude boundaries
+        - Accounts for Earth's curvature and latitude variation
+        - Edge distances calculated using average scale
+        - For accuracy: provide precise corner coordinates
         
-        ### About Curvature Split Suppression
+        ### Statistics Output
         
-        The "Min distance from intersection" parameter prevents excessive creation of curvature split points (orange nodes) near intersections:
-        - Set to 10 pixels by default
-        - Higher values create cleaner intersections with fewer intermediate nodes
-        - Lower values allow more detailed curve representation but may clutter intersections
+        The app now shows:
+        - Number of cumulative curve splits detected
+        - Number of sharp turn splits detected
+        - Total split points created
+        - Network integration success rate
         """)
     
     # Color legend
-    with st.expander("🎨 Node Color Meanings"):
-        col_legend1, col_legend2, col_legend3 = st.columns(3)
+    with st.expander("🎨 Enhanced Node Color Meanings"):
+        col_legend1, col_legend2 = st.columns(2)
         
         with col_legend1:
             st.markdown("🔴 **Red**: Intersection")
-        with col_legend2:
             st.markdown("🟡 **Yellow**: Endpoint")
-        with col_legend3:
-            st.markdown("🟠 **Orange**: Curvature split point")
+            st.markdown("🟠 **Orange**: Cumulative curve split")
+        with col_legend2:
+            st.markdown("💗 **Magenta**: Sharp turn split")
+            st.markdown("💜 **Purple**: Both types detected")
 
 # Footer
 st.markdown("---")
-st.markdown("Made with ❤️ using Streamlit")
+st.markdown("Made with ❤️ using Streamlit | **Enhanced Version with Dual Curvature Detection**")
