@@ -471,13 +471,13 @@ def detect_and_build_graph(binary_img, curvature_threshold, max_jump, min_transi
     for node_id, data in nodes.items():
         x, y = data['pos']
         if data['type'] == 0:
-            color = (255, 0, 0)  # Intersection
+        color = (0, 0, 255)  # 交差点 - 赤色
+        elif data['type'] == 1:
+        color = (0, 255, 0)  # コーナー - 緑色
         elif data['type'] == 2:
-            color = (0, 255, 255)  # Endpoint
+        color = (0, 255, 255)  # 端点 - 黄色
         elif data['type'] == 3:
-            color = (0, 165, 255)  # Curvature split
-        else:
-            color = (128, 128, 128)  # Other
+        color = (0, 165, 255)  # 曲率分割点 - オレンジ色
         
         radius = 5 if data['type'] != 3 else 3
         cv2.circle(marked_img, (x, y), radius, color, -1)
