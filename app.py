@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # Title
-st.title("📊 Generate Graph Data from Image (Enhanced Version)")
+st.title("📊 Generate Graph Data from Image")
 st.markdown("Upload an image to perform skeletonization and graph construction with improved curvature detection.")
 
 # Sidebar parameter settings
