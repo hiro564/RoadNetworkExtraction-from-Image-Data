@@ -12,6 +12,7 @@ import os
 import math
 import networkx as nx
 import pandas as pd
+from pyproj import Geod 
 
 # Page configuration
 st.set_page_config(
