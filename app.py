@@ -641,7 +641,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
             else:
                 color = (128, 0, 128)  # Both - Purple
         
-        radius = 3 if data['type'] != 3 else 3
+        radius = 2 
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
     # Store statistics in a way that can be returned
