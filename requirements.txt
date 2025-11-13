@@ -4,3 +4,4 @@ numpy
 scikit-image
 pillow
 pandas
+pyproj>=3.6.0
