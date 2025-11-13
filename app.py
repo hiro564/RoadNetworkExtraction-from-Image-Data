@@ -243,7 +243,7 @@ def high_quality_skeletonization(img):
 
 def smooth_path(path, window_size=3):
     """
-    経路を平滑化する(移動平均を使用)
+    経路を平滑化する（移動平均を使用）
     
     Parameters:
     - path: 経路の座標リスト [(y1, x1), (y2, x2), ...]
@@ -408,9 +408,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
         current_curvature = 0.0
         current_start_node_id = node_id
         
-        # Get the starting node's position for distance calculation
-        start_node_pos = nodes[current_start_node_id]['pos']
-        
         while True:
             # Check if current position belongs to another node
             end_node_id_check = coord_to_node_id[y, x]
@@ -419,22 +416,16 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
             # Calculate distance from start for split suppression
             distance_from_start = len(path)
             
-            # Check actual Euclidean distance from the starting node's center
-            current_dist_from_start_node = np.sqrt((x - start_node_pos[0])**2 + (y - start_node_pos[1])**2)
-            
             # Enhanced curvature detection: Check both cumulative and instant
-            # Only allow splits if we're far enough from the starting node
             is_cumulative_split = (
                 current_curvature >= curvature_threshold 
                 and distance_from_start > min_distance_from_node
-                and current_dist_from_start_node > min_distance_from_node  # Euclidean distance check
             )
             
             is_sharp_turn_split = (
                 distance_from_start > 0  # Need at least one step to calculate curvature_change
                 and distance_from_start > min_sharp_distance
                 and distance_from_start > min_distance_from_node
-                and current_dist_from_start_node > min_distance_from_node  # Euclidean distance check
             )
             
             # Calculate instant curvature change if we have previous direction
@@ -506,8 +497,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
                     current_start_node_id = target_node_id
                     current_curvature = 0.0
                     path = []
-                    # Update the starting node position for the new segment
-                    start_node_pos = nodes[current_start_node_id]['pos']
             
             if edge_visited_map[y, x] != -1:
                 break
@@ -578,7 +567,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
                 # Re-check sharp turn condition with calculated instant curvature
                 if (distance_from_start > min_sharp_distance and 
                     distance_from_start > min_distance_from_node and
-                    current_dist_from_start_node > min_distance_from_node and  # Additional check
                     instant_curvature >= instant_curve_threshold and
                     end_node_id_check == -1):
                     
@@ -622,8 +610,6 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
                     current_start_node_id = target_node_id
                     current_curvature = 0.0
                     path = []
-                    # Update the starting node position for the new segment
-                    start_node_pos = nodes[current_start_node_id]['pos']
                 
                 if max(abs(new_dy), abs(new_dx)) == 2:
                     mid_y, mid_x = y + new_dy//2, x + new_dx//2
@@ -655,7 +641,7 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
             else:
                 color = (128, 0, 128)  # Both - Purple
         
-        radius = 2  # All nodes have the same size
+        radius = 2 
         cv2.circle(marked_img, (x, y), radius, color, -1)
     
     # Store statistics in a way that can be returned
