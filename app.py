@@ -102,42 +102,36 @@ uploaded_file = st.file_uploader("Upload image file", type=['png', 'jpg', 'jpeg'
 
 def calculate_distance_scale(north_lat, south_lat, west_lon, east_lon, width_px, height_px):
     """
-    Calculate distance scale from image latitude/longitude range
+    Calculate real-world meters per pixel using geodesic (Bowring 1996, GRS80 ellipsoid)
     
     Parameters:
-    - north_lat, south_lat: North and south latitude boundaries
-    - west_lon, east_lon: West and east longitude boundaries
-    - width_px, height_px: Image width and height (pixels)
-    
-    Returns:
-    - meters_per_pixel_x: Meters per pixel horizontally
-    - meters_per_pixel_y: Meters per pixel vertically
-    - meters_per_pixel_avg: Average meters per pixel
-    """
-    # Earth radius (meters)
-    EARTH_RADIUS = 6371000
-    
-    # Calculate center latitude
-    center_lat = (north_lat + south_lat) / 2
-    center_lat_rad = math.radians(center_lat)
-    
-    # Longitude difference (east-west distance)
-    lon_diff = abs(east_lon - west_lon)
-    lon_diff_rad = math.radians(lon_diff)
-    distance_x_meters = EARTH_RADIUS * lon_diff_rad * math.cos(center_lat_rad)
-    meters_per_pixel_x = distance_x_meters / width_px
-    
-    # Latitude difference (north-south distance)
-    lat_diff = abs(north_lat - south_lat)
-    lat_diff_rad = math.radians(lat_diff)
-    distance_y_meters = EARTH_RADIUS * lat_diff_rad
-    meters_per_pixel_y = distance_y_meters / height_px
-    
-    # Average value (for diagonal distance calculation)
-    meters_per_pixel_avg = (meters_per_pixel_x + meters_per_pixel_y) / 2
-    
-    return meters_per_pixel_x, meters_per_pixel_y, meters_per_pixel_avg
+    - north_lat, south_lat: Latitude boundaries
+    - west_lon, east_lon: Longitude boundaries
+    - width_px, height_px: Image pixel dimensions
 
+    Returns:
+    - meters_per_pixel_x: Meters per pixel horizontally (longitude direction)
+    - meters_per_pixel_y: Meters per pixel vertically (latitude direction)
+    - meters_per_pixel_avg: Average scale (used for diagonal distances)
+    """
+    geod = Geod(ellps="GRS80")
+
+    # 中心緯度・経度（代表点）
+    center_lat = (north_lat + south_lat) / 2
+    center_lon = (west_lon + east_lon) / 2
+
+    # --- 1. 東西方向（経度差に基づく距離）---
+    az12, az21, dist_x = geod.inv(west_lon, center_lat, east_lon, center_lat)
+
+    # --- 2. 南北方向（緯度差に基づく距離）---
+    az12, az21, dist_y = geod.inv(center_lon, south_lat, center_lon, north_lat)
+
+    # --- 3. ピクセルあたりの距離に換算 ---
+    meters_per_pixel_x = dist_x / width_px
+    meters_per_pixel_y = dist_y / height_px
+    meters_per_pixel_avg = (meters_per_pixel_x + meters_per_pixel_y) / 2
+
+    return meters_per_pixel_x, meters_per_pixel_y, meters_per_pixel_avg
 
 def resize_image(img, target_width=480, target_height=360):
     """Resize image"""
