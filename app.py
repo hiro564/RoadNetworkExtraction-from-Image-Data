@@ -1043,37 +1043,37 @@ else:
     st.info("👆 Please select an image from the file uploader on the left")
     
     # Usage instructions
-    with st.expander("📖 使い方"):
+    with st.expander("📖 How to Use"):
         st.markdown("""
-        ### 基本的な使い方
+        ### Basic Usage
         
-        1. **画像をアップロード** - サイドバーから画像ファイルを選択
-        2. **パラメータを調整** (オプション)
-        3. **「グラフデータを生成」をクリック**
-        4. **結果を確認** - グラフと統計を確認
-        5. **CSVファイルをダウンロード**
+        1. **Upload Image** - Select an image file from the sidebar
+        2. **Adjust Parameters** (Optional)
+        3. **Click "Generate Graph Data"**
+        4. **Review Results** - Check graph and statistics
+        5. **Download CSV Files**
         
-        ### ノードの色
+        ### Node Colors
         
-        - 🔴 **赤**: 交差点 (3本以上の道路)
-        - 🟡 **黄**: 終点 (道路の端)
-        - 🟠 **オレンジ**: カーブ分割点
+        - 🔴 **Red**: Intersection (3+ roads)
+        - 🟡 **Yellow**: Endpoint (road terminus)
+        - 🟠 **Orange**: Curve split point
         
-        ### パラメータ調整のコツ
+        ### Parameter Tuning Tips
         
-        **ゆるやかなカーブが多い道路**: 累積閾値を上げる (15-20)
+        **For gradual curves**: Increase cumulative threshold (15-20)
         
-        **鋭角が多い道路**: 急カーブ閾値を下げる (2.5-3.0)
+        **For sharp angles**: Decrease sharp turn threshold (2.5-3.0)
         
-        **ノイズの多い画像**: 最小距離を上げる (8-12)
+        **For noisy images**: Increase minimum distance (8-12)
         """)
     
     # Color legend
-    with st.expander("🎨 ノードの色の意味"):
+    with st.expander("🎨 Node Color Legend"):
         st.markdown("""
-        - 🔴 **赤**: 交差点
-        - 🟡 **黄**: 終点
-        - 🟠 **オレンジ**: カーブ分割点
+        - 🔴 **Red**: Intersection
+        - 🟡 **Yellow**: Endpoint
+        - 🟠 **Orange**: Curve split point
         """)
 
 # Footer
