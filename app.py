@@ -1047,71 +1047,39 @@ else:
         st.markdown("""
         ### What's New in Enhanced Version
         
-        **🔄 Dual Curvature Detection System:**
-        - **Cumulative detection**: Tracks gradual curves over distance
-        - **Sharp turn detection**: Immediately detects acute angles (e.g., 90° turns)
-        - **Combined approach**: Best of both worlds for accurate segmentation
-        
-        ### How to Use
-        
-        1. **Upload Image**: Select an image file from the sidebar
-        2. **Distance Scale Settings** (Optional): Enable real distance calculation
-        3. **Network Integration** (Optional): Auto-connect isolated components
-        4. **Adjust Curvature Parameters**:
-           - **Cumulative threshold**: For gradual curves (default: 10.0)
-           - **Sharp turn threshold**: For immediate detection (default: 3.0)
-           - **Min sharp turn distance**: Noise prevention (default: 5)
-        5. **Generate**: Click the "Generate Graph Data" button
-        6. **Review Results**: Check statistics and graph visualization
-        7. **Download**: Get CSV files and images
-        
-        ### Enhanced Curvature Detection
-        
-        #### Cumulative Curvature (Orange nodes)
-        - Accumulates direction changes over the path
-        - Detects: S-curves, gentle bends, long gradual turns
-        - Example: `→ →↗ → →↗ → →↗` (total rotation = 45°)
-        
-        #### Sharp Turn Detection (Magenta nodes)
-        - Checks instant angle change at each step
-        - Detects: Right angles, hairpin turns, sudden direction changes
-        - Example: `→ → ↑` (immediate 90° turn)
-        
-        #### Combined Detection (Purple nodes)
-        - When both conditions are met simultaneously
-        - Represents: Complex curves with sharp corners
-        
-        ### Node Color Legend
-        
-        - 🔴 **Red**: Intersection (3+ roads meet)
-        - 🟡 **Yellow**: Endpoint (road terminus)
-        - 🟠 **Orange**: Cumulative curve split
-        - 💗 **Magenta**: Sharp turn split
-        - 💜 **Purple**: Both cumulative and sharp turn
-        
-        ### Parameter Tuning Tips
-        
-        **For road networks with:**
-        - **Many gradual curves**: Increase cumulative threshold (15-20)
-        - **Many sharp corners**: Decrease sharp turn threshold (2.5-3.0)
-        - **Noisy images**: Increase min sharp turn distance (8-12)
-        - **Clean images**: Decrease min sharp turn distance (3-5)
-        
-        ### About Distance Calculation
-        
-        - Distance scale uses latitude/longitude boundaries
-        - Accounts for Earth's curvature and latitude variation
-        - Edge distances calculated using average scale
-        - For accuracy: provide precise corner coordinates
-        
-        ### Statistics Output
-        
-        The app now shows:
-        - Number of cumulative curve splits detected
-        - Number of sharp turn splits detected
-        - Total split points created
-        - Network integration success rate
-        """)
+       # Usage instructions
+with st.expander("📖 使い方"):
+    st.markdown("""
+    ### 基本的な使い方
+    
+    1. **画像をアップロード** - サイドバーから画像ファイルを選択
+    2. **パラメータを調整** (オプション)
+    3. **「グラフデータを生成」をクリック**
+    4. **結果を確認** - グラフと統計を確認
+    5. **CSVファイルをダウンロード**
+    
+    ### ノードの色
+    
+    - 🔴 **赤**: 交差点 (3本以上の道路)
+    - 🟡 **黄**: 終点 (道路の端)
+    - 🟠 **オレンジ**: カーブ分割点
+    
+    ### パラメータ調整のコツ
+    
+    **ゆるやかなカーブが多い道路**: 累積閾値を上げる (15-20)
+    
+    **鋭角が多い道路**: 急カーブ閾値を下げる (2.5-3.0)
+    
+    **ノイズの多い画像**: 最小距離を上げる (8-12)
+    """)
+
+# Color legend
+with st.expander("🎨 ノードの色の意味"):
+    st.markdown("""
+    - 🔴 **赤**: 交差点
+    - 🟡 **黄**: 終点
+    - 🟠 **オレンジ**: カーブ分割点
+    """)
     
     # Color legend
     with st.expander("🎨 Enhanced Node Color Meanings"):
@@ -1121,9 +1089,6 @@ else:
             st.markdown("🔴 **Red**: Intersection")
             st.markdown("🟡 **Yellow**: Endpoint")
             st.markdown("🟠 **Orange**: Cumulative curve split")
-        with col_legend2:
-            st.markdown("💗 **Magenta**: Sharp turn split")
-            st.markdown("💜 **Purple**: Both types detected")
 
 # Footer
 st.markdown("---")
