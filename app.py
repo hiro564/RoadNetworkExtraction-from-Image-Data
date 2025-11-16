@@ -1043,52 +1043,38 @@ else:
     st.info("👆 Please select an image from the file uploader on the left")
     
     # Usage instructions
-    with st.expander("📖 How to Use (Enhanced Version)"):
+    with st.expander("📖 使い方"):
         st.markdown("""
-        ### What's New in Enhanced Version
+        ### 基本的な使い方
         
-       # Usage instructions
-with st.expander("📖 使い方"):
-    st.markdown("""
-    ### 基本的な使い方
-    
-    1. **画像をアップロード** - サイドバーから画像ファイルを選択
-    2. **パラメータを調整** (オプション)
-    3. **「グラフデータを生成」をクリック**
-    4. **結果を確認** - グラフと統計を確認
-    5. **CSVファイルをダウンロード**
-    
-    ### ノードの色
-    
-    - 🔴 **赤**: 交差点 (3本以上の道路)
-    - 🟡 **黄**: 終点 (道路の端)
-    - 🟠 **オレンジ**: カーブ分割点
-    
-    ### パラメータ調整のコツ
-    
-    **ゆるやかなカーブが多い道路**: 累積閾値を上げる (15-20)
-    
-    **鋭角が多い道路**: 急カーブ閾値を下げる (2.5-3.0)
-    
-    **ノイズの多い画像**: 最小距離を上げる (8-12)
-    """)
-
-# Color legend
-with st.expander("🎨 ノードの色の意味"):
-    st.markdown("""
-    - 🔴 **赤**: 交差点
-    - 🟡 **黄**: 終点
-    - 🟠 **オレンジ**: カーブ分割点
-    """)
+        1. **画像をアップロード** - サイドバーから画像ファイルを選択
+        2. **パラメータを調整** (オプション)
+        3. **「グラフデータを生成」をクリック**
+        4. **結果を確認** - グラフと統計を確認
+        5. **CSVファイルをダウンロード**
+        
+        ### ノードの色
+        
+        - 🔴 **赤**: 交差点 (3本以上の道路)
+        - 🟡 **黄**: 終点 (道路の端)
+        - 🟠 **オレンジ**: カーブ分割点
+        
+        ### パラメータ調整のコツ
+        
+        **ゆるやかなカーブが多い道路**: 累積閾値を上げる (15-20)
+        
+        **鋭角が多い道路**: 急カーブ閾値を下げる (2.5-3.0)
+        
+        **ノイズの多い画像**: 最小距離を上げる (8-12)
+        """)
     
     # Color legend
-    with st.expander("🎨 Enhanced Node Color Meanings"):
-        col_legend1, col_legend2 = st.columns(2)
-        
-        with col_legend1:
-            st.markdown("🔴 **Red**: Intersection")
-            st.markdown("🟡 **Yellow**: Endpoint")
-            st.markdown("🟠 **Orange**: Cumulative curve split")
+    with st.expander("🎨 ノードの色の意味"):
+        st.markdown("""
+        - 🔴 **赤**: 交差点
+        - 🟡 **黄**: 終点
+        - 🟠 **オレンジ**: カーブ分割点
+        """)
 
 # Footer
 st.markdown("---")
