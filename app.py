@@ -555,9 +555,12 @@ def detect_and_build_graph(binary_img, curvature_threshold, instant_curve_thresh
                     continue
                 
                 # Calculate instant curvature change
-                curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
-                instant_curvature = curvature_change
-                current_curvature += curvature_change
+                if (prev_dy, prev_dx) == (new_dy, new_dx):
+                    curvature_change = 0
+                else:
+                    curvature_change = 2 - (prev_dy * new_dy + prev_dx * new_dx)
+                    instant_curvature = curvature_change
+                    current_curvature += curvature_change
                 
                 # Re-check sharp turn condition with calculated instant curvature
                 if (distance_from_start > min_sharp_distance and 
